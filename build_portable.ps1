@@ -92,36 +92,40 @@ start /min "" http://localhost:8501
 
 # Create README
 @"
-SCHED//PRO v1.0 - Production Scheduler
-=========================================
+SCHED//PRO v1.0 — Planer Proizvodnje | Korisnicko uputstvo
 
-KORISCENJE:
-1. Pokreni run.bat (ili run_quiet.bat za minimizovan prozor)
-2. Browser se otvara automatski na http://localhost:8501
-3. Prijava: admin / admin
+1. POKRETANJE — dvoklik na RUN.BAT, browser na http://localhost:8501
+   Prijava: admin / admin | Gasenje: Ctrl+C ili zatvori CMD prozor
 
-MODULI:
-- NALOZI      - kreiranje naloga za isporuku (automatski generise radne naloge)
-- POSLOVI     - pregled radnih naloga sa stampom
-- SABLONI     - definisanje tehnoloskih sablona
-- RADNA MESTA - definisanje masina i radnih mesta
-- GANT        - vizuelni prikaz rasporeda proizvodnje
-- KONFLIKTI   - detekcija preklapanja i kapaciteta
-- STA-AKO     - simulacija hitnih poslova
-- ZALIHE      - pracenje materijala i stanja
-- CSV UVOZ    - grupni uvoz naloga
+2. PRVI PUT — redosled:
+   1) RADNA MESTA → definisi masine
+   2) SABLONI → definisi operacije za svaki deo
+   3) NALOZI → kreiraj nalog (automatski pravi radni nalog)
+   4) Levo: >> POKRENI RASPOREDJIVAC
+   5) GANT → vidi raspored
 
-ZAHTEVI:
-- Windows 10 ili noviji (64-bit)
-- Nije potrebna Python instalacija
+3. TABOVI:
+   RADNA MESTA — masine, parametri (h/dan, efikasnost)
+   NALOZI — narudzbine kupaca → automatski radni nalog
+   POSLOVI — radni nalozi, pokretanje rasporedjivaca, STAMPA (HTML)
+   SABLONI — tehnoloski postupci za svaku oznaku dela
+   GANT — grafikon rasporeda
+   KONFLIKTI — preklapanja i kapacitet
+   KALENDAR — neradni dani
+   STA-AKO — simulacija hitnog posla
+   CSV UVOZ — grupni uvoz iz Excela
+   ZALIHE — stanje materijala
 
-PODACI:
-- Svi podaci se cuvaju u app/scheduler.db
-- Napravi backup ove datoteke za sigurnost podataka
-- Obrisi je da resetujes sve
+4. RASPOREDJIVANJE:
+   Napred (prioritet) — od danas prema buducnosti
+   Nazad (od roka) — unazad od roka isporuke
+   Radno vreme: 06-22h, radni dani
 
-TEHNICKA PODRSKA:
-- Kontaktirajte developera za licencne kljuceve i podrsku
+5. LICENCIRANJE: 30 dana trial. HW ID → developer → kljuc → AKTIVIRAJ
+
+6. PODACI: app\scheduler.db — napravi backup redovno
+
+SCHED//PRO v1.0 | © 2026
 "@ | Out-File -FilePath "$OUTPUT\README.txt" -Encoding ASCII
 
 Write-Host ""
