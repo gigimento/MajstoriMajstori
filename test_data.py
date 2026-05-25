@@ -14,13 +14,11 @@ conn.execute("DELETE FROM routing_steps WHERE tenant_id = ?", (TENANT,))
 conn.execute("DELETE FROM jobs WHERE tenant_id = ?", (TENANT,))
 conn.execute("DELETE FROM work_centers WHERE tenant_id = ?", (TENANT,))
 conn.execute("DELETE FROM holidays WHERE tenant_id = ?", (TENANT,))
+conn.execute("DELETE FROM sqlite_sequence")  # reset auto-increment
 
-conn.execute("INSERT INTO work_centers (tenant_id, name, type, hours_per_day, efficiency, max_concurrent_jobs) VALUES (?,?,?,?,?,?)",
-             (TENANT, "CNC Mill", "production", 8, 0.85, 1))
-conn.execute("INSERT INTO work_centers (tenant_id, name, type, hours_per_day, efficiency, max_concurrent_jobs) VALUES (?,?,?,?,?,?)",
-             (TENANT, "Inspection", "inspection", 8, 0.90, 1))
-conn.execute("INSERT INTO work_centers (tenant_id, name, type, hours_per_day, efficiency, max_concurrent_jobs) VALUES (?,?,?,?,?,?)",
-             (TENANT, "Assembly", "production", 8, 0.80, 2))
+for i in range(1, 11):
+    conn.execute("INSERT INTO work_centers (tenant_id, name, type, hours_per_day, efficiency, max_concurrent_jobs) VALUES (?,?,?,?,?,?)",
+                 (TENANT, f"Radno mesto {i}", "production" if i % 3 != 0 else "inspection", 8, 0.85 if i % 3 != 0 else 0.90, 2 if i == 3 else 1))
 conn.commit()
 
 conn.execute("INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority) VALUES (?,?,?,?,?)",
@@ -32,17 +30,17 @@ conn.execute("INSERT INTO jobs (tenant_id, part_number, quantity, due_date, prio
 conn.commit()
 
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 1, 1, 1, 1.0, 0.05, "CNC mill bracket"))
+             (TENANT, 1, 1, 1, 1.0, 0.05, "Obrada na RM1"))
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 1, 2, 2, 0.5, 0.02, "Inspect bracket"))
+             (TENANT, 1, 2, 2, 0.5, 0.02, "Kontrola na RM2"))
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 2, 1, 1, 0.5, 0.08, "CNC shaft"))
+             (TENANT, 2, 1, 1, 0.5, 0.08, "Obrada na RM1"))
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 2, 2, 2, 0.5, 0.01, "Inspect shaft"))
+             (TENANT, 2, 2, 2, 0.5, 0.01, "Kontrola na RM2"))
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 3, 1, 3, 0.5, 0.03, "Assemble housing"))
+             (TENANT, 3, 1, 3, 0.5, 0.03, "Montaža na RM3"))
 conn.execute("INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description) VALUES (?,?,?,?,?,?,?)",
-             (TENANT, 3, 2, 2, 0.5, 0.015, "Inspect housing"))
+             (TENANT, 3, 2, 2, 0.5, 0.015, "Kontrola na RM2"))
 conn.commit()
 conn.close()
 
@@ -83,8 +81,8 @@ conn.close()
 print("\n=== TEST WHAT-IF RUSH ===")
 from scheduler import what_if_rush_job
 result = what_if_rush_job(TENANT, "RUSH-SHAFT", 30, "2026-05-30", [
-    {"order": 1, "work_center_id": 1, "setup_hrs": 0.5, "run_hrs_per_unit": 0.06, "desc": "CNC rush"},
-    {"order": 2, "work_center_id": 2, "setup_hrs": 0.25, "run_hrs_per_unit": 0.01, "desc": "Inspect rush"},
+    {"order": 1, "work_center_id": 1, "setup_hrs": 0.5, "run_hrs_per_unit": 0.06, "desc": "Hitna obrada RM1"},
+    {"order": 2, "work_center_id": 2, "setup_hrs": 0.25, "run_hrs_per_unit": 0.01, "desc": "Hitna kontrola RM2"},
 ])
 print(f"Rush job #{result['rush_job_id']}: on_time={result['rush_on_time']}, late={result['total_late_jobs']}")
 

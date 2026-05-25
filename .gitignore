@@ -3,3 +3,5 @@ __pycache__/
 scheduler.db
 SCHEDPRO/
 python-embed.zip
+*.zip
+pdf_export.txt

@@ -92,33 +92,36 @@ start /min "" http://localhost:8501
 
 # Create README
 @"
-SCHED//PRO - Portable Production Scheduler
-==========================================
+SCHED//PRO v1.0 - Production Scheduler
+=========================================
 
-HOW TO USE:
-1. Copy the entire SCHEDPRO folder to your desktop or USB drive
-2. Double-click run.bat
-3. Browser will open automatically
-4. Login: admin / admin
+KORISCENJE:
+1. Pokreni run.bat (ili run_quiet.bat za minimizovan prozor)
+2. Browser se otvara automatski na http://localhost:8501
+3. Prijava: admin / admin
 
-REQUIREMENTS:
-- Windows 10 or later (64-bit)
-- No Python installation needed
-- Internet only on first run (for setup)
+MODULI:
+- NALOZI      - kreiranje naloga za isporuku (automatski generise radne naloge)
+- POSLOVI     - pregled radnih naloga sa stampom
+- SABLONI     - definisanje tehnoloskih sablona
+- RADNA MESTA - definisanje masina i radnih mesta
+- GANT        - vizuelni prikaz rasporeda proizvodnje
+- KONFLIKTI   - detekcija preklapanja i kapaciteta
+- STA-AKO     - simulacija hitnih poslova
+- ZALIHE      - pracenje materijala i stanja
+- CSV UVOZ    - grupni uvoz naloga
 
-FIRST TIME SETUP (if downloaded manually):
-Double-click run.bat and wait ~30 seconds for the server to start.
-The app will check for dependencies automatically.
+ZAHTEVI:
+- Windows 10 ili noviji (64-bit)
+- Nije potrebna Python instalacija
 
-PORTS:
-Default port: 8501
-If port 8501 is busy, the app will try port 8502, 8503, etc.
-Check the console window to see which port was assigned.
+PODACI:
+- Svi podaci se cuvaju u app/scheduler.db
+- Napravi backup ove datoteke za sigurnost podataka
+- Obrisi je da resetujes sve
 
-DATA:
-All data is stored in app/scheduler.db
-Back up this file to keep your data.
-Delete it to reset everything.
+TEHNICKA PODRSKA:
+- Kontaktirajte developera za licencne kljuceve i podrsku
 "@ | Out-File -FilePath "$OUTPUT\README.txt" -Encoding ASCII
 
 Write-Host ""

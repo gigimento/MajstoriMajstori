@@ -133,8 +133,8 @@ def sidebar():
             st.markdown("❌ **Licenca istekla**")
 
         st.markdown("---")
-        st.markdown("### v0.3 MVP")
-        st.markdown("multi-tenant · prioritet · csv-uvoz")
+        st.markdown("### v1.0")
+        st.markdown("nalozi · sabloni · stampa · zalihe")
         st.markdown("---")
 
         mode = st.radio("Režim raspoređivanja", ["Napred (prioritet)", "Nazad (od roka)"], key="sched_mode")
@@ -245,8 +245,52 @@ def tab_work_centers():
             st.rerun()
 
 
+def _print_job_html(job, steps):
+    rows = "".join(f"""
+        <tr>
+            <td>{s['step_order']}</td>
+            <td>{s['wc_name']}</td>
+            <td>{s['description'] or ''}</td>
+            <td>{s['setup_hrs']}h</td>
+            <td>{s['run_hrs_per_unit']}h</td>
+        </tr>""" for s in steps)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8"><title>Radni nalog #{job['id']}</title>
+<style>
+    @page {{ margin: 8mm; }}
+    body {{ font-family: 'Courier New', monospace; font-size: 11pt; color: #000; background: #fff; }}
+    h1 {{ font-size: 18pt; border-bottom: 3px solid #000; padding-bottom: 4px; text-transform: uppercase; }}
+    h2 {{ font-size: 14pt; margin-top: 20px; }}
+    table {{ width: 100%; border-collapse: collapse; margin-top: 10px; }}
+    th, td {{ border: 2px solid #000; padding: 6px 10px; text-align: left; }}
+    th {{ background: #eee; font-weight: bold; text-transform: uppercase; font-size: 10pt; }}
+    td {{ font-size: 11pt; }}
+    .info {{ margin: 4px 0; }}
+    .label {{ font-weight: bold; }}
+    .footer {{ margin-top: 30px; border-top: 1px solid #000; padding-top: 8px; font-size: 9pt; }}
+</style>
+</head><body>
+<h1>RADNI NALOG</h1>
+<p class="info"><span class="label">Broj naloga:</span> #{job['id']}</p>
+<p class="info"><span class="label">Oznaka dela:</span> {job['part_number']}</p>
+<p class="info"><span class="label">Količina:</span> {job['quantity']} kom</p>
+<p class="info"><span class="label">Rok isporuke:</span> {job['due_date'][:10]}</p>
+<p class="info"><span class="label">Prioritet:</span> {job['priority']}</p>
+<hr>
+<h2>TEHNOLOŠKI POSTUPAK</h2>
+<table>
+<tr><th>Korak</th><th>Radno mesto</th><th>Opis</th><th>Priprema</th><th>Obrada/kom</th></tr>
+{rows}
+</table>
+<div class="footer">
+    <p>Štampano: {datetime.now().strftime('%d.%m.%Y %H:%M')}</p>
+    <p style="margin-top:40px">Izvršilac: ___________________  Datum: ________  Potpis: ________</p>
+</div>
+</body></html>"""
+
+
 def tab_jobs():
-    st.markdown("## // POSLOVI")
+    st.markdown("## // RADNI NALOZI (PROIZVODNJA)")
     conn = get_db()
 
     if "edit_job" in st.session_state:
@@ -280,7 +324,16 @@ def tab_jobs():
         conn.close()
         return
 
-    jobs = conn.execute("SELECT * FROM jobs WHERE tenant_id = ? ORDER BY due_date", (tid,)).fetchall()
+    delivery_orders = {r["id"]: r for r in conn.execute(
+        "SELECT id, customer_name, part_number FROM delivery_orders WHERE tenant_id = ?", (tid,)).fetchall()}
+
+    jobs = conn.execute("""
+        SELECT j.*, do.customer_name
+        FROM jobs j
+        LEFT JOIN delivery_orders do ON j.delivery_order_id = do.id
+        WHERE j.tenant_id = ?
+        ORDER BY j.due_date
+    """, (tid,)).fetchall()
     conn.close()
 
     for r in jobs:
@@ -294,93 +347,52 @@ def tab_jobs():
             if final and final["end_datetime"] > f"{r['due_date']}T22:00:00":
                 late = True
 
-        c1, c2, c3 = st.columns([16, 1, 1])
+        c1, c2, c3, c4 = st.columns([12, 2, 1, 1])
         with c1:
             status_sr = {"unscheduled": "neraspoređeno", "scheduled": "raspoređeno",
                          "released": "pušteno", "in_progress": "u_radu",
                          "completed": "završeno", "cancelled": "otkazano"}
-            label = f"#{r['id']} {r['part_number']}  |  Kol:{r['quantity']}  Rok:{r['due_date'][:10]}  Pri:{r['priority']}  [{status_sr[r['status']]}]"
+            cust = f" [{r['customer_name']}]" if r["customer_name"] else ""
+            label = f"#{r['id']} {r['part_number']}{cust}  |  Kol:{r['quantity']}  Rok:{r['due_date'][:10]}  Pri:{r['priority']}  [{status_sr[r['status']]}]"
             color = "#FF4444" if late else TEXT
             st.markdown(f"<div style='color:{color}'>{label}</div>", unsafe_allow_html=True)
-        if c2.button("\u270f\ufe0f", key=f"job_edit_{r['id']}"):
+
+        if c2.button("🖨️", key=f"job_print_{r['id']}"):
+            st.session_state.print_job_id = r["id"]
+            st.rerun()
+        if c3.button("✏️", key=f"job_edit_{r['id']}"):
             st.session_state.edit_job = r
             st.rerun()
-        if c3.button("\U0001f5d1\ufe0f", key=f"job_del_{r['id']}"):
+        if c4.button("🗑️", key=f"job_del_{r['id']}"):
             conn2 = get_db()
             conn2.execute("DELETE FROM jobs WHERE id = ? AND tenant_id = ?", (r["id"], tid))
             conn2.commit()
             conn2.close()
             st.rerun()
 
-    st.markdown("---")
-    with st.expander("+ DODAJ POSAO"):
-        col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
-        pn = col1.text_input("Oznaka dela", key="job_pn")
-        qty = col2.number_input("Količina", min_value=1, value=100, key="job_qty")
-        due = col3.date_input("Rok isporuke", value=date.today(), key="job_due")
-        pri = col4.number_input("Prioritet (1-10)", min_value=1, max_value=10, value=5, key="job_pri")
-        notes = st.text_area("Napomena", key="job_notes")
-        if st.button("DODAJ POSAO"):
-            conn2 = get_db()
-            conn2.execute("""
-                INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority, notes)
-                VALUES (?,?,?,?,?,?)
-            """, (tid, pn, qty, due.isoformat(), pri, notes))
-            conn2.commit()
-            conn2.close()
-            st.success("Posao kreiran — sada dodaj operacije ispod")
-            st.rerun()
-
-    st.markdown("---")
-    st.markdown("### Operacije (Rutiranje)")
-    conn = get_db()
-    steps = conn.execute("""
-        SELECT rs.*, j.part_number AS job_pn, wc.name AS wc_name
-        FROM routing_steps rs
-        JOIN jobs j ON rs.job_id = j.id
-        JOIN work_centers wc ON rs.work_center_id = wc.id
-        WHERE j.tenant_id = ?
-        ORDER BY rs.job_id, rs.step_order
-    """, (tid,)).fetchall()
-    conn.close()
-
-    if steps:
-        sd = [{"Posao": f"#{s['job_id']} {s['job_pn']}", "Korak": s["step_order"],
-               "RM": s["wc_name"], "Priprema h": s["setup_hrs"],
-               "Obrada h/kom": s["run_hrs_per_unit"], "Opis": s["description"]} for s in steps]
-        st.dataframe(pd.DataFrame(sd), use_container_width=True, hide_index=True)
-    else:
-        st.info("Nema definisanih operacija")
-
-    with st.expander("+ DODAJ OPERACIJU"):
+    if "print_job_id" in st.session_state:
+        st.markdown("---")
         conn = get_db()
-        jobs_list = conn.execute(
-            "SELECT id, part_number FROM jobs WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
-        wc_list = conn.execute(
-            "SELECT id, name FROM work_centers WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
+        pj = conn.execute("SELECT * FROM jobs WHERE id = ? AND tenant_id = ?",
+                          (st.session_state.print_job_id, tid)).fetchone()
+        psteps = conn.execute("""
+            SELECT rs.*, wc.name AS wc_name FROM routing_steps rs
+            JOIN work_centers wc ON rs.work_center_id = wc.id
+            WHERE rs.job_id = ? AND rs.tenant_id = ?
+            ORDER BY rs.step_order
+        """, (st.session_state.print_job_id, tid)).fetchall()
         conn.close()
-        if not jobs_list or not wc_list:
-            st.warning("Prvo definiši poslove i radna mesta")
-        else:
-            col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 2, 2])
-            sel_job = col1.selectbox("Posao", {j["id"]: f"#{j['id']} {j['part_number']}" for j in jobs_list}, key="rs_job")
-            order = col2.number_input("Korak#", min_value=1, value=1, key="rs_order")
-            sel_wc = col3.selectbox("Radno mesto", {w["id"]: w["name"] for w in wc_list}, key="rs_wc")
-            setup = col4.number_input("Priprema (h)", min_value=0.0, value=0.5, step=0.1, key="rs_setup")
-            run = col5.number_input("Obrada h/kom", min_value=0.0, value=0.01, step=0.001, format="%.3f", key="rs_run")
-            desc = st.text_input("Opis", key="rs_desc")
-            if st.button("DODAJ OPERACIJU"):
-                conn2 = get_db()
-                try:
-                    conn2.execute("""
-                        INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description)
-                        VALUES (?,?,?,?,?,?,?)
-                    """, (tid, sel_job, order, sel_wc, setup, run, desc))
-                    conn2.commit()
-                except Exception as e:
-                    st.error(str(e))
-                conn2.close()
-                st.rerun()
+        if pj:
+            html = _print_job_html(dict(pj), [dict(s) for s in psteps])
+            st.download_button("📥 PREUZMI HTML ZA ŠTAMPU", data=html.encode("utf-8"),
+                               file_name=f"radni_nalog_{pj['id']}.html", mime="text/html",
+                               type="primary", use_container_width=True)
+            st.markdown("---")
+            st.markdown("### Pregled za štampu")
+            st.components.v1.html(html, height=800, scrolling=True)
+        if st.button("ZATVORI"):
+            del st.session_state.print_job_id
+            st.rerun()
 
 
 def tab_gantt():
@@ -629,13 +641,11 @@ def tab_whatif():
 
 def tab_import():
     st.markdown("## // CSV UVOZ")
-    st.markdown("Otpremite CSV za grupni uvoz poslova (i opciono operacija).")
+    st.markdown("Otpremite CSV za grupni uvoz naloga za isporuku (automatski kreira radne naloge iz šablona).")
 
     csv_template = pd.DataFrame([
-        {"part_number": "PRIMER-001", "quantity": 100, "due_date": "2026-06-15",
-         "priority": 5, "notes": "uzorak",
-         "wc_1": 1, "setup_1": 1.0, "run_1": 0.05,
-         "wc_2": 2, "setup_2": 0.5, "run_2": 0.02},
+        {"customer": "Primer Kupac", "part_number": "PRIMER-001", "quantity": 100, "due_date": "2026-06-15",
+         "priority": 5, "notes": "uzorak"},
     ])
     csv_data = csv_template.to_csv(index=False).encode("utf-8")
     st.download_button(
@@ -650,9 +660,7 @@ def tab_import():
     st.markdown("""
     ### Format
     **Obavezne kolone:** `part_number`, `quantity`, `due_date`  
-    **Opcione kolone:** `priority`, `notes`, `wc_1`, `setup_1`, `run_1`, `wc_2`, `setup_2`, `run_2`, ...
-
-    Koristi ID-ove radnih mesta iz kartice RADNA MESTA.
+    **Opcione kolone:** `customer`, `priority`, `notes`
     """)
 
     uploaded = st.file_uploader("Izaberi CSV fajl", type="csv", key="csv_uploader")
@@ -661,7 +669,7 @@ def tab_import():
         st.markdown(f"**{len(df)} redova učitano**")
         st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
-        if st.button("UVOZI POSLOVE", type="primary", key="import_btn"):
+        if st.button("UVOZI NALOGE", type="primary", key="import_btn"):
             conn = get_db()
             imported = 0
             errors = []
@@ -673,38 +681,39 @@ def tab_import():
                 if not pn or not qty or not due:
                     errors.append(f"Nedostaje obavezno polje: {row}")
                     continue
+                cust = str(row.get("customer", ""))
                 pri = int(row.get("priority", 5))
                 notes = str(row.get("notes", ""))
-                cur = conn.execute("""
-                    INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority, notes)
-                    VALUES (?,?,?,?,?,?)
-                """, (tid, str(pn), int(qty), str(due)[:10], pri, notes))
-                job_id = cur.lastrowid
-                for i in range(1, 20):
-                    wc_key = f"wc_{i}"
-                    setup_key = f"setup_{i}"
-                    run_key = f"run_{i}"
-                    wc = row.get(wc_key)
-                    setup = row.get(setup_key)
-                    run_hrs = row.get(run_key)
-                    if wc is not None and run_hrs is not None:
-                        desc = row.get(f"desc_{i}", "")
-                        wc_id = int(wc)
-                        setup_hrs = float(setup) if setup else 0
-                        run_val = float(run_hrs)
-                        try:
+                try:
+                    cur = conn.execute("""
+                        INSERT INTO delivery_orders (tenant_id, customer_name, part_number, quantity, due_date, priority, notes)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (tid, cust, str(pn), int(qty), str(due)[:10], pri, notes))
+                    do_id = cur.lastrowid
+
+                    template = conn.execute("""
+                        SELECT * FROM tech_templates WHERE tenant_id = ? AND part_number = ?
+                        ORDER BY step_order
+                    """, (tid, str(pn))).fetchall()
+
+                    if template:
+                        cur2 = conn.execute("""
+                            INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority, notes, delivery_order_id)
+                            VALUES (?,?,?,?,?,?,?)
+                        """, (tid, str(pn), int(qty), str(due)[:10], pri, notes, do_id))
+                        job_id = cur2.lastrowid
+                        for step in template:
                             conn.execute("""
                                 INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description)
                                 VALUES (?,?,?,?,?,?,?)
-                            """, (tid, job_id, i, wc_id, setup_hrs, run_val, desc))
-                        except Exception as e:
-                            errors.append(f"Korak {i} za posao {pn}: {e}")
-                    else:
-                        break
-                imported += 1
+                            """, (tid, job_id, step["step_order"], step["work_center_id"],
+                                   step["setup_hrs"], step["run_hrs_per_unit"], step["description"]))
+                    imported += 1
+                except Exception as e:
+                    errors.append(f"{pn}: {e}")
             conn.commit()
             conn.close()
-            st.success(f"Uvezeno {imported} poslova")
+            st.success(f"Uvezeno {imported} naloga")
             if errors:
                 for e in errors[:5]:
                     st.warning(e)
@@ -716,14 +725,333 @@ def tab_import():
 if lic["status"] == "trial_warning":
     st.warning(f"⚠️ {lic['message']}")
 
-tabs = st.tabs(["RADNA MESTA", "POSLOVI", "GANT", "KONFLIKTI", "KALENDAR", "ŠTA-AKO", "CSV UVOZ"])
+def tab_delivery_orders():
+    st.markdown("## // NALOZI ZA ISPORUKU")
+    conn = get_db()
+
+    if "edit_do" in st.session_state:
+        r = st.session_state.edit_do
+        with st.form("edit_do_form"):
+            cust = st.text_input("Kupac", value=r["customer_name"])
+            pn = st.text_input("Oznaka dela", value=r["part_number"])
+            qty = st.number_input("Količina", min_value=1, value=r["quantity"])
+            due = st.date_input("Rok isporuke", value=datetime.fromisoformat(r["due_date"]).date())
+            pri = st.number_input("Prioritet (1-10)", min_value=1, max_value=10, value=r["priority"] or 5)
+            do_status = st.selectbox("Status", ["pending", "in_production", "completed", "cancelled"],
+                                     index=["pending", "in_production", "completed", "cancelled"].index(r["status"]))
+            notes = st.text_area("Napomena", value=r["notes"] or "")
+            c1, c2 = st.columns(2)
+            if c1.form_submit_button("SAČUVAJ"):
+                conn.execute("""
+                    UPDATE delivery_orders SET customer_name=?, part_number=?, quantity=?, due_date=?, priority=?, status=?, notes=?
+                    WHERE id=? AND tenant_id=?
+                """, (cust, pn, qty, due.isoformat(), pri, do_status, notes, r["id"], tid))
+                conn.commit()
+                del st.session_state.edit_do
+                conn.close()
+                st.rerun()
+            if c2.form_submit_button("ODUSTANI"):
+                del st.session_state.edit_do
+                conn.close()
+                st.rerun()
+        conn.close()
+        return
+
+    orders = conn.execute("SELECT * FROM delivery_orders WHERE tenant_id = ? ORDER BY due_date", (tid,)).fetchall()
+
+    for r in orders:
+        jobs = conn.execute("""
+            SELECT id, part_number, quantity, status FROM jobs
+            WHERE delivery_order_id = ? AND tenant_id = ?
+        """, (r["id"], tid)).fetchall()
+        status_sr = {"pending": "na čekanju", "in_production": "u proizvodnji", "completed": "završeno", "cancelled": "otkazano"}
+        c1, c2, c3, c4 = st.columns([10, 3, 1, 1])
+        with c1:
+            st.markdown(f"**#{r['id']} {r['part_number']}** — {r['customer_name']}  |  Kol:{r['quantity']}  Rok:{r['due_date'][:10]}  [{status_sr[r['status']]}]")
+            if jobs:
+                for j in jobs:
+                    st.markdown(f"&nbsp;&nbsp;→ Radni nalog #{j['id']} ({j['status']})", unsafe_allow_html=True)
+        c2.markdown(f"<div style='text-align:center; color:{ACCENT}'>{len(jobs)} RN</div>", unsafe_allow_html=True)
+        if c3.button("✏️", key=f"do_edit_{r['id']}"):
+            st.session_state.edit_do = r
+            st.rerun()
+        if c4.button("🗑️", key=f"do_del_{r['id']}"):
+            conn2 = get_db()
+            conn2.execute("DELETE FROM delivery_orders WHERE id = ? AND tenant_id = ?", (r["id"], tid))
+            conn2.commit()
+            conn2.close()
+            st.rerun()
+
+    st.markdown("---")
+    st.markdown("### + NOVI NALOG ZA ISPORUKU")
+    col1, col2, col3, col4, col5 = st.columns([2, 2, 1, 1, 1])
+    cust = col1.text_input("Kupac", key="do_cust")
+    pn = col2.text_input("Oznaka dela", key="do_pn")
+    qty = col3.number_input("Količina", min_value=1, value=100, key="do_qty")
+    due = col4.date_input("Rok isporuke", value=date.today(), key="do_due")
+    pri = col5.number_input("Prioritet", min_value=1, max_value=10, value=5, key="do_pri")
+    notes = st.text_area("Napomena", key="do_notes")
+    if st.button("KREIRAJ NALOG I GENERIŠI RADNI NALOG", type="primary", use_container_width=True):
+        if not pn:
+            st.error("Unesite oznaku dela")
+        else:
+            conn2 = get_db()
+            cur = conn2.execute("""
+                INSERT INTO delivery_orders (tenant_id, customer_name, part_number, quantity, due_date, priority, notes)
+                VALUES (?,?,?,?,?,?,?)
+            """, (tid, cust, pn, qty, due.isoformat(), pri, notes))
+            do_id = cur.lastrowid
+
+            template = conn2.execute("""
+                SELECT * FROM tech_templates WHERE tenant_id = ? AND part_number = ?
+                ORDER BY step_order
+            """, (tid, pn)).fetchall()
+
+            if template:
+                cur2 = conn2.execute("""
+                    INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority, notes, delivery_order_id)
+                    VALUES (?,?,?,?,?,?,?)
+                """, (tid, pn, qty, due.isoformat(), pri, notes, do_id))
+                job_id = cur2.lastrowid
+                for step in template:
+                    conn2.execute("""
+                        INSERT INTO routing_steps (tenant_id, job_id, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description)
+                        VALUES (?,?,?,?,?,?,?)
+                    """, (tid, job_id, step["step_order"], step["work_center_id"],
+                           step["setup_hrs"], step["run_hrs_per_unit"], step["description"]))
+                conn2.commit()
+                st.success(f"Nalog #{do_id} kreiran → Radni nalog #{job_id} sa {len(template)} operacija")
+            else:
+                conn2.commit()
+                st.warning(f"Nalog #{do_id} kreiran, ali nema šablona za '{pn}'. Definiši ga u kartici ŠABLONI pa ručno kreiraj radni nalog.")
+            conn2.close()
+            st.rerun()
+
+    conn.close()
+
+
+def tab_templates():
+    st.markdown("## // TEHNOLOŠKI ŠABLONI")
+    st.markdown("Definiši rutiranje za svaku oznaku dela — operacije se automatski kopiraju kad se kreira nalog za isporuku.")
+    conn = get_db()
+
+    if "edit_tmpl" in st.session_state:
+        r = st.session_state.edit_tmpl
+        with st.form("edit_tmpl_form"):
+            pn = st.text_input("Oznaka dela", value=r["part_number"])
+            order = st.number_input("Redni broj", min_value=1, value=r["step_order"])
+            wc_list = conn.execute("SELECT id, name FROM work_centers WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
+            wc_opts = {w["id"]: w["name"] for w in wc_list}
+            wc_id = st.selectbox("Radno mesto", list(wc_opts.keys()), format_func=lambda x: wc_opts[x],
+                                 index=[w["id"] for w in wc_list].index(r["work_center_id"]))
+            setup = st.number_input("Priprema (h)", min_value=0.0, value=r["setup_hrs"], step=0.1)
+            run = st.number_input("Obrada h/kom", min_value=0.0, value=r["run_hrs_per_unit"], step=0.001, format="%.3f")
+            desc = st.text_input("Opis", value=r["description"] or "")
+            c1, c2 = st.columns(2)
+            if c1.form_submit_button("SAČUVAJ"):
+                conn.execute("""
+                    UPDATE tech_templates SET part_number=?, step_order=?, work_center_id=?, setup_hrs=?, run_hrs_per_unit=?, description=?
+                    WHERE id=? AND tenant_id=?
+                """, (pn, order, wc_id, setup, run, desc, r["id"], tid))
+                conn.commit()
+                del st.session_state.edit_tmpl
+                conn.close()
+                st.rerun()
+            if c2.form_submit_button("ODUSTANI"):
+                del st.session_state.edit_tmpl
+                conn.close()
+                st.rerun()
+        conn.close()
+        return
+
+    templates = conn.execute("""
+        SELECT tt.*, wc.name AS wc_name FROM tech_templates tt
+        JOIN work_centers wc ON tt.work_center_id = wc.id
+        WHERE tt.tenant_id = ?
+        ORDER BY tt.part_number, tt.step_order
+    """, (tid,)).fetchall()
+    conn.close()
+
+    if templates:
+        grouped = {}
+        for t in templates:
+            grouped.setdefault(t["part_number"], []).append(t)
+        for pn, steps in grouped.items():
+            st.markdown(f"**`{pn}`** — {len(steps)} operacija")
+            for s in steps:
+                c1, c2, c3, c4 = st.columns([1, 3, 2, 1])
+                c1.markdown(f"**Op{s['step_order']}**")
+                c2.markdown(s["wc_name"])
+                c3.markdown(f"Priprema {s['setup_hrs']}h · Obrada {s['run_hrs_per_unit']}h/kom")
+                c4.markdown(f"_{s['description'] or ''}_")
+                col1, col2 = st.columns([1, 1])
+                if col1.button("✏️", key=f"tmpl_edit_{s['id']}"):
+                    st.session_state.edit_tmpl = s
+                    st.rerun()
+                if col2.button("🗑️", key=f"tmpl_del_{s['id']}"):
+                    conn2 = get_db()
+                    conn2.execute("DELETE FROM tech_templates WHERE id = ? AND tenant_id = ?", (s["id"], tid))
+                    conn2.commit()
+                    conn2.close()
+                    st.rerun()
+            st.markdown("---")
+    else:
+        st.info("Nema definisanih šablona")
+
+    st.markdown("### + DODAJ OPERACIJU U ŠABLON")
+    conn = get_db()
+    wc_list = conn.execute("SELECT id, name FROM work_centers WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
+    conn.close()
+    if not wc_list:
+        st.warning("Prvo definiši radna mesta")
+    else:
+        col1, col2, col3, col4, col5, col6 = st.columns([2, 1, 2, 1, 1, 2])
+        pn = col1.text_input("Oznaka dela", key="tmpl_pn")
+        order = col2.number_input("Korak#", min_value=1, value=1, key="tmpl_order")
+        wc_opts = {w["id"]: w["name"] for w in wc_list}
+        wc_id = col3.selectbox("Radno mesto", list(wc_opts.keys()), format_func=lambda x: wc_opts[x], key="tmpl_wc")
+        setup = col4.number_input("Priprema (h)", min_value=0.0, value=0.5, step=0.1, key="tmpl_setup")
+        run = col5.number_input("Obrada h/kom", min_value=0.0, value=0.01, step=0.001, format="%.3f", key="tmpl_run")
+        desc = col6.text_input("Opis", key="tmpl_desc")
+        if st.button("DODAJ U ŠABLON"):
+            conn2 = get_db()
+            try:
+                conn2.execute("""
+                    INSERT INTO tech_templates (tenant_id, part_number, step_order, work_center_id, setup_hrs, run_hrs_per_unit, description)
+                    VALUES (?,?,?,?,?,?,?)
+                """, (tid, pn, order, wc_id, setup, run, desc))
+                conn2.commit()
+                st.success(f"Operacija dodata u šablon za '{pn}'")
+            except Exception as e:
+                st.error(str(e))
+            conn2.close()
+            st.rerun()
+
+
+def tab_inventory():
+    st.markdown("## // ZALIHE")
+    conn = get_db()
+
+    if "edit_inv" in st.session_state:
+        r = st.session_state.edit_inv
+        with st.form("edit_inv_form"):
+            pn = st.text_input("Oznaka dela", value=r["part_number"])
+            name = st.text_input("Naziv", value=r["name"])
+            qty = st.number_input("Količina", min_value=0.0, value=float(r["quantity"]), step=1.0)
+            alert = st.number_input("Min. zaliha (alert)", min_value=0.0, value=float(r["min_alert"]), step=1.0)
+            unit = st.text_input("Jedinica mere", value=r["unit"])
+            c1, c2 = st.columns(2)
+            if c1.form_submit_button("SAČUVAJ"):
+                conn.execute("""
+                    UPDATE inventory_items SET part_number=?, name=?, quantity=?, min_alert=?, unit=?
+                    WHERE id=? AND tenant_id=?
+                """, (pn, name, qty, alert, unit, r["id"], tid))
+                conn.commit()
+                del st.session_state.edit_inv
+                conn.close()
+                st.rerun()
+            if c2.form_submit_button("ODUSTANI"):
+                del st.session_state.edit_inv
+                conn.close()
+                st.rerun()
+        conn.close()
+        return
+
+    items = conn.execute("""
+        SELECT * FROM inventory_items WHERE tenant_id = ? ORDER BY name
+    """, (tid,)).fetchall()
+    conn.close()
+
+    low_stock = [r for r in items if r["min_alert"] > 0 and r["quantity"] <= r["min_alert"]]
+    if low_stock:
+        for r in low_stock:
+            st.warning(f"⚠️ Niska zaliha: **{r['name']}** ({r['part_number']}) — {r['quantity']} {r['unit']} (min: {r['min_alert']})")
+
+    for r in items:
+        c1, c2, c3, c4 = st.columns([12, 2, 1, 1])
+        color = DANGER if r["min_alert"] > 0 and r["quantity"] <= r["min_alert"] else TEXT
+        with c1:
+            st.markdown(f"<div style='color:{color}'><b>{r['name']}</b> — `{r['part_number']}` — **{r['quantity']}** {r['unit']}</div>", unsafe_allow_html=True)
+        if c2.button("PROMET", key=f"inv_tx_{r['id']}"):
+            st.session_state.show_tx = r["id"]
+            st.rerun()
+        if c3.button("✏️", key=f"inv_edit_{r['id']}"):
+            st.session_state.edit_inv = r
+            st.rerun()
+        if c4.button("🗑️", key=f"inv_del_{r['id']}"):
+            conn2 = get_db()
+            try:
+                conn2.execute("DELETE FROM inventory_items WHERE id = ? AND tenant_id = ?", (r["id"], tid))
+                conn2.commit()
+            except Exception as e:
+                st.error(f"Ne može da se obriše: {e}")
+            conn2.close()
+            st.rerun()
+
+    if "show_tx" in st.session_state:
+        st.markdown("---")
+        st.markdown("### Promet")
+        conn = get_db()
+        txns = conn.execute("""
+            SELECT * FROM inventory_transactions
+            WHERE tenant_id = ? AND item_id = ?
+            ORDER BY created_at DESC LIMIT 50
+        """, (tid, st.session_state.show_tx)).fetchall()
+        conn.close()
+        if txns:
+            td = pd.DataFrame([{
+                "Tip": "ULAZ" if r["type"] == "in" else "IZLAZ",
+                "Količina": r["quantity"],
+                "Referenca": r["reference"] or "",
+                "Vreme": r["created_at"][:19],
+            } for r in txns])
+            st.dataframe(td, use_container_width=True, hide_index=True)
+        else:
+            st.info("Nema prometa")
+        if st.button("ZATVORI PROMET"):
+            del st.session_state.show_tx
+            st.rerun()
+
+    st.markdown("---")
+    c1, c2, c3 = st.columns(3)
+    pn = c1.text_input("Oznaka dela", key="inv_pn")
+    name = c2.text_input("Naziv", key="inv_name")
+    unit = c3.text_input("Jedinica", value="kom", key="inv_unit")
+    c1, c2 = st.columns(2)
+    init_qty = c1.number_input("Početna količina", min_value=0.0, value=0.0, step=1.0, key="inv_qty")
+    alert = c2.number_input("Min. zaliha (alert)", min_value=0.0, value=0.0, step=1.0, key="inv_alert")
+    if st.button("DODAJ NA ZALIHU"):
+        conn2 = get_db()
+        try:
+            cur = conn2.execute("""
+                INSERT INTO inventory_items (tenant_id, part_number, name, quantity, min_alert, unit)
+                VALUES (?,?,?,?,?,?)
+            """, (tid, pn, name, init_qty, alert, unit))
+            item_id = cur.lastrowid
+            if init_qty > 0:
+                conn2.execute("""
+                    INSERT INTO inventory_transactions (tenant_id, item_id, type, quantity, reference)
+                    VALUES (?,?,?,?,?)
+                """, (tid, item_id, "in", init_qty, "Početno stanje"))
+            conn2.commit()
+            st.success("Stavka dodata")
+        except Exception as e:
+            st.error(str(e))
+        conn2.close()
+        st.rerun()
+
+
+tabs = st.tabs(["RADNA MESTA", "NALOZI", "POSLOVI", "ŠABLONI", "GANT", "KONFLIKTI", "KALENDAR", "ŠTA-AKO", "CSV UVOZ", "ZALIHE"])
 
 with tabs[0]: tab_work_centers()
-with tabs[1]: tab_jobs()
-with tabs[2]: tab_gantt()
-with tabs[3]: tab_conflicts()
-with tabs[4]: tab_holidays()
-with tabs[5]: tab_whatif()
-with tabs[6]: tab_import()
+with tabs[1]: tab_delivery_orders()
+with tabs[2]: tab_jobs()
+with tabs[3]: tab_templates()
+with tabs[4]: tab_gantt()
+with tabs[5]: tab_conflicts()
+with tabs[6]: tab_holidays()
+with tabs[7]: tab_whatif()
+with tabs[8]: tab_import()
+with tabs[9]: tab_inventory()
 
 sidebar()

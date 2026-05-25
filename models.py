@@ -103,6 +103,53 @@ def init_db():
             data TEXT NOT NULL
         );
 
+        CREATE TABLE IF NOT EXISTS delivery_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+            customer_name TEXT NOT NULL DEFAULT '',
+            part_number TEXT NOT NULL,
+            quantity INTEGER NOT NULL,
+            due_date TEXT NOT NULL,
+            priority INTEGER NOT NULL DEFAULT 5,
+            notes TEXT,
+            status TEXT NOT NULL DEFAULT 'pending'
+                CHECK(status IN ('pending', 'in_production', 'completed', 'cancelled')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS tech_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+            part_number TEXT NOT NULL,
+            step_order INTEGER NOT NULL,
+            work_center_id INTEGER NOT NULL REFERENCES work_centers(id),
+            setup_hrs REAL NOT NULL DEFAULT 0,
+            run_hrs_per_unit REAL NOT NULL DEFAULT 0,
+            description TEXT,
+            UNIQUE(tenant_id, part_number, step_order)
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+            part_number TEXT NOT NULL,
+            name TEXT NOT NULL,
+            quantity REAL NOT NULL DEFAULT 0,
+            min_alert REAL NOT NULL DEFAULT 0,
+            unit TEXT NOT NULL DEFAULT 'kom',
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
+        CREATE TABLE IF NOT EXISTS inventory_transactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+            item_id INTEGER NOT NULL REFERENCES inventory_items(id) ON DELETE CASCADE,
+            type TEXT NOT NULL CHECK(type IN ('in', 'out')),
+            quantity REAL NOT NULL,
+            reference TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+
         CREATE TABLE IF NOT EXISTS license (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             tenant_id INTEGER NOT NULL UNIQUE REFERENCES tenants(id),
@@ -114,6 +161,11 @@ def init_db():
             expires_at TEXT
         );
     """)
+    for col in ("delivery_order_id",):
+        try:
+            conn.execute(f"ALTER TABLE jobs ADD COLUMN {col} INTEGER REFERENCES delivery_orders(id)")
+        except Exception:
+            pass
     existing = conn.execute("SELECT COUNT(*) AS c FROM tenants").fetchone()
     if existing["c"] == 0:
         conn.execute("INSERT INTO tenants (name) VALUES (?)", ("Podrazumevani",))
