@@ -1,18 +1,17 @@
 # -*- coding: utf-8 -*-
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, date, timedelta
-from io import StringIO
 from models import init_db, authenticate_user, register_user, get_db
 from scheduler import (forward_schedule, backward_schedule, get_conflicts,
                        get_capacity_violations, move_job, what_if_rush_job,
-                       get_jobs_past_due, snapshot_schedule, restore_snapshot)
+                       snapshot_schedule, restore_snapshot)
+from license import init_license, check_license, activate_license, get_license_info
 
 st.set_page_config(page_title="SCHED//PRO", layout="wide", page_icon="\u26a1")
 
-HC = st.sidebar.checkbox("HIGH CONTRAST", value=False, key="hc_toggle") if "user" in st.session_state else False
+HC = st.sidebar.checkbox("VISOKI KONTRAST", value=False, key="hc_toggle") if "user" in st.session_state else False
 
 ACCENT = "#FF8800" if HC else "#FF8800"
 ACCENT2 = "#0088FF"
@@ -68,12 +67,12 @@ if "user" not in st.session_state:
     st.markdown("<div class='login-box'>", unsafe_allow_html=True)
     st.markdown("## SCHED//PRO")
     st.markdown("---")
-    tab_l, tab_r = st.tabs(["LOGIN", "REGISTER"])
+    tab_l, tab_r = st.tabs(["PRIJAVA", "REGISTRACIJA"])
     with tab_l:
         with st.form("login_form"):
-            u = st.text_input("Username", key="login_user")
-            p = st.text_input("Password", type="password", key="login_pass")
-            if st.form_submit_button("LOGIN", type="primary", use_container_width=True):
+            u = st.text_input("Korisničko ime", key="login_user")
+            p = st.text_input("Lozinka", type="password", key="login_pass")
+            if st.form_submit_button("PRIJAVA", type="primary", use_container_width=True):
                 user, err = authenticate_user(u, p)
                 if user:
                     st.session_state.user = user
@@ -82,13 +81,13 @@ if "user" not in st.session_state:
                     st.error(err)
     with tab_r:
         with st.form("register_form"):
-            u2 = st.text_input("Username", key="reg_user")
-            p2 = st.text_input("Password", type="password", key="reg_pass")
-            t2 = st.text_input("Company / Tenant name", key="reg_tenant")
-            if st.form_submit_button("REGISTER", use_container_width=True):
+            u2 = st.text_input("Korisničko ime", key="reg_user")
+            p2 = st.text_input("Lozinka", type="password", key="reg_pass")
+            t2 = st.text_input("Naziv firme / tenanta", key="reg_tenant")
+            if st.form_submit_button("REGISTRACIJA", use_container_width=True):
                 user, err = register_user(u2, p2, t2 or None)
                 if user:
-                    st.success("Registered — now log in")
+                    st.success("Registracija uspešna — sada se prijavite")
                 else:
                     st.error(err)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -96,75 +95,106 @@ if "user" not in st.session_state:
 
 tid = st.session_state.user["tenant_id"]
 
+init_license(tid)
+lic = check_license(tid)
+
+if lic["status"] in ("expired", "tampered"):
+    st.markdown("## // LICENCA")
+    st.error(lic["message"])
+    with st.form("license_form"):
+        key_input = st.text_input("Unesite licencni ključ", placeholder="SCHEDPRO-XXXXX-XXXXX-XXXXX-XXXXX")
+        if st.form_submit_button("AKTIVIRAJ", type="primary", use_container_width=True):
+            ok, msg = activate_license(tid, key_input)
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+    st.markdown("---")
+    st.markdown("**Hardver ID:** `" + get_license_info(tid)["hw_id"][:16] + "..." + "`")
+    st.markdown("Pošaljite ovaj Hardver ID developeru da dobijete licencni ključ.")
+    st.stop()
+
 
 def sidebar():
     with st.sidebar:
         st.markdown(f"## SCHED//PRO")
         st.markdown(f"**{st.session_state.user['tenant_name']}**")
         st.markdown(f"`@{st.session_state.user['username']}`")
+
+        lic_status = check_license(tid)
+        if lic_status["is_licensed"]:
+            st.markdown("✅ **Full verzija**")
+        elif lic_status["days_left"] > 0:
+            days = lic_status["days_left"]
+            color = "#FFCC00" if days <= 14 else "#AAAAAA"
+            st.markdown(f"<span style='color:{color}'>⏳ Trial: {days} dan(a)</span>", unsafe_allow_html=True)
+        else:
+            st.markdown("❌ **Licenca istekla**")
+
         st.markdown("---")
         st.markdown("### v0.3 MVP")
-        st.markdown("multi-tenant · priority · csv-import")
+        st.markdown("multi-tenant · prioritet · csv-uvoz")
         st.markdown("---")
 
-        mode = st.radio("Schedule mode", ["Forward (priority-weighted)", "Backward (from due date)"], key="sched_mode")
+        mode = st.radio("Režim raspoređivanja", ["Napred (prioritet)", "Nazad (od roka)"], key="sched_mode")
         st.markdown("---")
 
-        if st.button(">> RUN SCHEDULER", use_container_width=True, type="primary"):
-            with st.spinner("Scheduling..."):
-                if "Backward" in mode:
+        if st.button(">> POKRENI RASPOREĐIVAČ", use_container_width=True, type="primary"):
+            with st.spinner("Raspoređivanje..."):
+                if "Nazad" in mode:
                     backward_schedule(tid)
                 else:
                     forward_schedule(tid)
-            st.success("Schedule generated")
+            st.success("Raspored generisan")
             st.rerun()
 
         st.markdown("---")
         if st.button("[SNAP] SNAPSHOT", use_container_width=True):
             snapshot_schedule(tid, f"snap_{datetime.now().strftime('%H%M%S')}")
-            st.success("Snapshot saved")
+            st.success("Snimljeno")
 
         snapshots = get_db().execute(
             "SELECT id, name, created_at FROM schedule_snapshots WHERE tenant_id = ? ORDER BY id DESC",
             (tid,)).fetchall()
         if snapshots:
             snap_options = {f"#{s['id']} {s['name']} ({s['created_at'][:19]})": s["id"] for s in snapshots}
-            selected = st.selectbox("Restore snapshot", list(snap_options.keys()), key="snap_select")
-            if st.button("RESTORE", use_container_width=True):
+            selected = st.selectbox("Vrati snapshot", list(snap_options.keys()), key="snap_select")
+            if st.button("VRAĆANJE", use_container_width=True):
                 restore_snapshot(tid, snap_options[selected])
-                st.success("Restored")
+                st.success("Vraćeno")
                 st.rerun()
 
         st.markdown("---")
-        if st.button("LOGOUT", use_container_width=True):
+        if st.button("ODJAVA", use_container_width=True):
             del st.session_state.user
             st.rerun()
 
 
 def tab_work_centers():
-    st.markdown("## // WORK CENTERS")
+    st.markdown("## // RADNA MESTA")
     conn = get_db()
 
     if "edit_wc" in st.session_state:
         r = st.session_state.edit_wc
         with st.form("edit_wc_form"):
-            name = st.text_input("Name", value=r["name"])
-            wtype = st.selectbox("Type", ["production", "inspection"],
+            name = st.text_input("Naziv", value=r["name"])
+            wtype = st.selectbox("Tip", ["proizvodno", "kontrola"],
                                  index=0 if r["type"] == "production" else 1)
-            hpd = st.number_input("Hrs/Day", min_value=1, max_value=24, value=int(r["hours_per_day"]))
-            eff = st.number_input("Efficiency %", min_value=10, max_value=100, value=int(r["efficiency"] * 100))
-            conc = st.number_input("Max concurrent jobs", min_value=1, value=int(r["max_concurrent_jobs"]))
+            hpd = st.number_input("H/dan", min_value=1, max_value=24, value=int(r["hours_per_day"]))
+            eff = st.number_input("Efikasnost %", min_value=10, max_value=100, value=int(r["efficiency"] * 100))
+            conc = st.number_input("Maks. paralelnih poslova", min_value=1, value=int(r["max_concurrent_jobs"]))
             c1, c2 = st.columns(2)
-            if c1.form_submit_button("SAVE"):
+            if c1.form_submit_button("SAČUVAJ"):
                 conn.execute("""
                     UPDATE work_centers SET name=?, type=?, hours_per_day=?, efficiency=?, max_concurrent_jobs=?
                     WHERE id=? AND tenant_id=?
-                """, (name, wtype, hpd, eff / 100, conc, r["id"], tid))
+                """, (name, "production" if wtype == "proizvodno" else "inspection", hpd, eff / 100, conc, r["id"], tid))
                 conn.commit()
                 del st.session_state.edit_wc
                 conn.close()
                 st.rerun()
-            if c2.form_submit_button("CANCEL"):
+            if c2.form_submit_button("ODUSTANI"):
                 del st.session_state.edit_wc
                 conn.close()
                 st.rerun()
@@ -174,9 +204,9 @@ def tab_work_centers():
     wc = conn.execute("SELECT * FROM work_centers WHERE tenant_id = ?", (tid,)).fetchall()
     conn.close()
 
-    data = [{"ID": r["id"], "Name": r["name"], "Type": r["type"],
-             "Hrs/Day": r["hours_per_day"], "Efficiency": f"{int(r['efficiency']*100)}%",
-             "Max Concurrent": r["max_concurrent_jobs"]} for r in wc]
+    data = [{"ID": r["id"], "Naziv": r["name"], "Tip": "proizvodno" if r["type"] == "production" else "kontrola",
+             "H/dan": r["hours_per_day"], "Efikasnost": f"{int(r['efficiency']*100)}%",
+             "Maks. paralelno": r["max_concurrent_jobs"]} for r in wc]
     if data:
         for r in data:
             c1, c2, c3 = st.columns([16, 1, 1])
@@ -191,56 +221,59 @@ def tab_work_centers():
                     conn2.execute("DELETE FROM work_centers WHERE id = ? AND tenant_id = ?", (r["ID"], tid))
                     conn2.commit()
                 except Exception as e:
-                    st.error(f"Cannot delete: {e}")
+                    st.error(f"Ne može da se obriše: {e}")
                 conn2.close()
                 st.rerun()
     else:
-        st.info("No work centers defined")
+        st.info("Nema definisanih radnih mesta")
 
-    with st.expander("+ ADD WORK CENTER"):
+    with st.expander("+ DODAJ RADNO MESTO"):
         col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 2, 2])
-        name = col1.text_input("Name", key="wc_name")
-        wtype = col2.selectbox("Type", ["production", "inspection"], key="wc_type")
-        hpd = col3.number_input("Hrs/Day", min_value=1, max_value=24, value=8, key="wc_hrs")
-        eff = col4.number_input("Efficiency %", min_value=10, max_value=100, value=85, key="wc_eff")
-        conc = col5.number_input("Max concurrent", min_value=1, value=1, key="wc_conc")
-        if st.button("ADD", key="add_wc"):
+        name = col1.text_input("Naziv", key="wc_name")
+        wtype = col2.selectbox("Tip", ["proizvodno", "kontrola"], key="wc_type")
+        hpd = col3.number_input("H/dan", min_value=1, max_value=24, value=8, key="wc_hrs")
+        eff = col4.number_input("Efikasnost %", min_value=10, max_value=100, value=85, key="wc_eff")
+        conc = col5.number_input("Maks. paralelno", min_value=1, value=1, key="wc_conc")
+        if st.button("DODAJ", key="add_wc"):
             conn2 = get_db()
             conn2.execute("""
                 INSERT INTO work_centers (tenant_id, name, type, hours_per_day, efficiency, max_concurrent_jobs)
                 VALUES (?,?,?,?,?,?)
-            """, (tid, name, wtype, hpd, eff / 100, conc))
+            """, (tid, name, "production" if wtype == "proizvodno" else "inspection", hpd, eff / 100, conc))
             conn2.commit()
             conn2.close()
             st.rerun()
 
 
 def tab_jobs():
-    st.markdown("## // JOBS")
+    st.markdown("## // POSLOVI")
     conn = get_db()
 
     if "edit_job" in st.session_state:
         r = st.session_state.edit_job
         with st.form("edit_job_form"):
-            pn = st.text_input("Part Number", value=r["part_number"])
-            qty = st.number_input("Quantity", min_value=1, value=r["quantity"])
-            due = st.date_input("Due Date", value=datetime.fromisoformat(r["due_date"]).date())
-            pri = st.number_input("Priority (1-10)", min_value=1, max_value=10, value=r["priority"] or 5)
+            pn = st.text_input("Oznaka dela", value=r["part_number"])
+            qty = st.number_input("Količina", min_value=1, value=r["quantity"])
+            due = st.date_input("Rok isporuke", value=datetime.fromisoformat(r["due_date"]).date())
+            pri = st.number_input("Prioritet (1-10)", min_value=1, max_value=10, value=r["priority"] or 5)
             status = st.selectbox("Status",
-                                  ["unscheduled", "scheduled", "released", "in_progress", "completed", "cancelled"],
+                                  ["neraspoređeno", "raspoređeno", "pušteno", "u_radu", "završeno", "otkazano"],
                                   index=["unscheduled", "scheduled", "released", "in_progress", "completed", "cancelled"].index(r["status"]))
-            notes = st.text_area("Notes", value=r["notes"] or "")
+            notes = st.text_area("Napomena", value=r["notes"] or "")
             c1, c2 = st.columns(2)
-            if c1.form_submit_button("SAVE"):
+            if c1.form_submit_button("SAČUVAJ"):
+                status_map = {"neraspoređeno": "unscheduled", "raspoređeno": "scheduled",
+                              "pušteno": "released", "u_radu": "in_progress",
+                              "završeno": "completed", "otkazano": "cancelled"}
                 conn.execute("""
                     UPDATE jobs SET part_number=?, quantity=?, due_date=?, priority=?, status=?, notes=?
                     WHERE id=? AND tenant_id=?
-                """, (pn, qty, due.isoformat(), pri, status, notes, r["id"], tid))
+                """, (pn, qty, due.isoformat(), pri, status_map[status], notes, r["id"], tid))
                 conn.commit()
                 del st.session_state.edit_job
                 conn.close()
                 st.rerun()
-            if c2.form_submit_button("CANCEL"):
+            if c2.form_submit_button("ODUSTANI"):
                 del st.session_state.edit_job
                 conn.close()
                 st.rerun()
@@ -263,7 +296,10 @@ def tab_jobs():
 
         c1, c2, c3 = st.columns([16, 1, 1])
         with c1:
-            label = f"#{r['id']} {r['part_number']}  |  Qty:{r['quantity']}  Due:{r['due_date'][:10]}  Pri:{r['priority']}  [{r['status']}]"
+            status_sr = {"unscheduled": "neraspoređeno", "scheduled": "raspoređeno",
+                         "released": "pušteno", "in_progress": "u_radu",
+                         "completed": "završeno", "cancelled": "otkazano"}
+            label = f"#{r['id']} {r['part_number']}  |  Kol:{r['quantity']}  Rok:{r['due_date'][:10]}  Pri:{r['priority']}  [{status_sr[r['status']]}]"
             color = "#FF4444" if late else TEXT
             st.markdown(f"<div style='color:{color}'>{label}</div>", unsafe_allow_html=True)
         if c2.button("\u270f\ufe0f", key=f"job_edit_{r['id']}"):
@@ -277,14 +313,14 @@ def tab_jobs():
             st.rerun()
 
     st.markdown("---")
-    with st.expander("+ ADD JOB"):
+    with st.expander("+ DODAJ POSAO"):
         col1, col2, col3, col4 = st.columns([3, 2, 2, 2])
-        pn = col1.text_input("Part Number", key="job_pn")
-        qty = col2.number_input("Quantity", min_value=1, value=100, key="job_qty")
-        due = col3.date_input("Due Date", value=date.today(), key="job_due")
-        pri = col4.number_input("Priority (1-10)", min_value=1, max_value=10, value=5, key="job_pri")
-        notes = st.text_area("Notes", key="job_notes")
-        if st.button("ADD JOB"):
+        pn = col1.text_input("Oznaka dela", key="job_pn")
+        qty = col2.number_input("Količina", min_value=1, value=100, key="job_qty")
+        due = col3.date_input("Rok isporuke", value=date.today(), key="job_due")
+        pri = col4.number_input("Prioritet (1-10)", min_value=1, max_value=10, value=5, key="job_pri")
+        notes = st.text_area("Napomena", key="job_notes")
+        if st.button("DODAJ POSAO"):
             conn2 = get_db()
             conn2.execute("""
                 INSERT INTO jobs (tenant_id, part_number, quantity, due_date, priority, notes)
@@ -292,11 +328,11 @@ def tab_jobs():
             """, (tid, pn, qty, due.isoformat(), pri, notes))
             conn2.commit()
             conn2.close()
-            st.success("Job created — now add routing steps below")
+            st.success("Posao kreiran — sada dodaj operacije ispod")
             st.rerun()
 
     st.markdown("---")
-    st.markdown("### Routing Steps")
+    st.markdown("### Operacije (Rutiranje)")
     conn = get_db()
     steps = conn.execute("""
         SELECT rs.*, j.part_number AS job_pn, wc.name AS wc_name
@@ -309,14 +345,14 @@ def tab_jobs():
     conn.close()
 
     if steps:
-        sd = [{"Job": f"#{s['job_id']} {s['job_pn']}", "Step": s["step_order"],
-               "WC": s["wc_name"], "Setup hrs": s["setup_hrs"],
-               "Run hrs/unit": s["run_hrs_per_unit"], "Desc": s["description"]} for s in steps]
+        sd = [{"Posao": f"#{s['job_id']} {s['job_pn']}", "Korak": s["step_order"],
+               "RM": s["wc_name"], "Priprema h": s["setup_hrs"],
+               "Obrada h/kom": s["run_hrs_per_unit"], "Opis": s["description"]} for s in steps]
         st.dataframe(pd.DataFrame(sd), use_container_width=True, hide_index=True)
     else:
-        st.info("No routing steps defined")
+        st.info("Nema definisanih operacija")
 
-    with st.expander("+ ADD ROUTING STEP"):
+    with st.expander("+ DODAJ OPERACIJU"):
         conn = get_db()
         jobs_list = conn.execute(
             "SELECT id, part_number FROM jobs WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
@@ -324,16 +360,16 @@ def tab_jobs():
             "SELECT id, name FROM work_centers WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
         conn.close()
         if not jobs_list or not wc_list:
-            st.warning("Define jobs and work centers first")
+            st.warning("Prvo definiši poslove i radna mesta")
         else:
             col1, col2, col3, col4, col5 = st.columns([2, 1, 2, 2, 2])
-            sel_job = col1.selectbox("Job", {j["id"]: f"#{j['id']} {j['part_number']}" for j in jobs_list}, key="rs_job")
-            order = col2.number_input("Step#", min_value=1, value=1, key="rs_order")
-            sel_wc = col3.selectbox("Work Center", {w["id"]: w["name"] for w in wc_list}, key="rs_wc")
-            setup = col4.number_input("Setup (hrs)", min_value=0.0, value=0.5, step=0.1, key="rs_setup")
-            run = col5.number_input("Run hrs/unit", min_value=0.0, value=0.01, step=0.001, format="%.3f", key="rs_run")
-            desc = st.text_input("Description", key="rs_desc")
-            if st.button("ADD STEP"):
+            sel_job = col1.selectbox("Posao", {j["id"]: f"#{j['id']} {j['part_number']}" for j in jobs_list}, key="rs_job")
+            order = col2.number_input("Korak#", min_value=1, value=1, key="rs_order")
+            sel_wc = col3.selectbox("Radno mesto", {w["id"]: w["name"] for w in wc_list}, key="rs_wc")
+            setup = col4.number_input("Priprema (h)", min_value=0.0, value=0.5, step=0.1, key="rs_setup")
+            run = col5.number_input("Obrada h/kom", min_value=0.0, value=0.01, step=0.001, format="%.3f", key="rs_run")
+            desc = st.text_input("Opis", key="rs_desc")
+            if st.button("DODAJ OPERACIJU"):
                 conn2 = get_db()
                 try:
                     conn2.execute("""
@@ -348,7 +384,7 @@ def tab_jobs():
 
 
 def tab_gantt():
-    st.markdown("## // SCHEDULE GANTT")
+    st.markdown("## // GANT RASPORED")
     conn = get_db()
     schedule = conn.execute("""
         SELECT s.*, j.part_number, j.quantity, j.due_date, wc.name AS wc_name, wc.type AS wc_type,
@@ -365,53 +401,53 @@ def tab_gantt():
     conn.close()
 
     c1, c2, c3 = st.columns(3)
-    c1.markdown(f"<div class='metric-card'><div class='label'>CONFLICTS</div><div class='value'>{len(conflicts)}</div></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='metric-card'><div class='label'>SCHEDULED OPS</div><div class='value'>{len(schedule)}</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card'><div class='label'>CAPACITY OVER</div><div class='value'>{len(caps)}</div></div>", unsafe_allow_html=True)
+    c1.markdown(f"<div class='metric-card'><div class='label'>KONFLIKTI</div><div class='value'>{len(conflicts)}</div></div>", unsafe_allow_html=True)
+    c2.markdown(f"<div class='metric-card'><div class='label'>RASPOREĐENE OPERACIJE</div><div class='value'>{len(schedule)}</div></div>", unsafe_allow_html=True)
+    c3.markdown(f"<div class='metric-card'><div class='label'>PREKORAČENJE KAPACITETA</div><div class='value'>{len(caps)}</div></div>", unsafe_allow_html=True)
 
     if caps:
-        st.warning("Capacity violations detected")
+        st.warning("Detektovano prekoračenje kapaciteta")
         cd = pd.DataFrame([{
-            "Work Center": r["name"], "Date": r["date"],
-            "Scheduled hrs": r["total_hrs"], "Max hrs": r["hours_per_day"]
+            "Radno mesto": r["name"], "Datum": r["date"],
+            "Planirano h": r["total_hrs"], "Max h": r["hours_per_day"]
         } for r in caps])
         st.dataframe(cd, use_container_width=True, hide_index=True)
 
     if len(conflicts) > 0:
-        st.error(f"{len(conflicts)} overlapping operations detected")
+        st.error(f"{len(conflicts)} operacija se preklapa")
     else:
-        st.success("No conflicts")
+        st.success("Nema konflikata")
 
     if not schedule:
-        st.info("Run scheduler first")
+        st.info("Prvo pokreni raspoređivač")
         return
 
     df = pd.DataFrame([{
-        "Job": f"#{r['job_id']} {r['part_number']}",
-        "Work Center": r["wc_name"],
-        "Type": r["wc_type"],
-        "Step": f"Op{r['step_order']}",
-        "Start": datetime.fromisoformat(r["start_datetime"]),
-        "End": datetime.fromisoformat(r["end_datetime"]),
-        "Due": r["due_date"],
+        "Posao": f"#{r['job_id']} {r['part_number']}",
+        "Radno mesto": r["wc_name"],
+        "Tip": r["wc_type"],
+        "Korak": f"Op{r['step_order']}",
+        "Početak": datetime.fromisoformat(r["start_datetime"]),
+        "Kraj": datetime.fromisoformat(r["end_datetime"]),
+        "Rok": r["due_date"],
     } for r in schedule])
 
     fig = go.Figure()
     job_colors = {}
     palette = ["#0088FF", "#FF8800", "#00CC88", "#CC44FF", "#FFCC00", "#44CCFF", "#FF4488", "#88FF44"]
-    for i, jid in enumerate(sorted(df["Job"].unique())):
+    for i, jid in enumerate(sorted(df["Posao"].unique())):
         job_colors[jid] = palette[i % len(palette)]
 
     for _, row in df.iterrows():
-        color = job_colors.get(row["Job"], "#888888")
-        is_inspection = row["Type"] == "inspection"
+        color = job_colors.get(row["Posao"], "#888888")
+        is_inspection = row["Tip"] == "inspection"
         fig.add_trace(go.Bar(
-            base=[row["Start"]],
-            x=[(row["End"] - row["Start"]).total_seconds() / 3600 / 24],
-            y=[row["Work Center"]],
+            base=[row["Početak"]],
+            x=[(row["Kraj"] - row["Početak"]).total_seconds() / 3600 / 24],
+            y=[row["Radno mesto"]],
             orientation="h",
-            name=row["Job"],
-            text=f"{row['Job']} - {row['Step']}",
+            name=row["Posao"],
+            text=f"{row['Posao']} - {row['Korak']}",
             hoverinfo="text",
             marker_color=color,
             marker_line_width=3,
@@ -423,25 +459,25 @@ def tab_gantt():
 
     fig.update_layout(
         barmode="stack",
-        height=max(300, len(df["Work Center"].unique()) * 60),
+        height=max(300, len(df["Radno mesto"].unique()) * 60),
         paper_bgcolor="#000000",
         plot_bgcolor="#000000",
         font_color="#cccccc",
-        xaxis_title="Date",
-        yaxis_title="Work Center",
+        xaxis_title="Datum",
+        yaxis_title="Radno mesto",
         margin=dict(l=20, r=20, t=20, b=20),
     )
     fig.update_xaxes(gridcolor="#222222", zeroline=False)
     fig.update_yaxes(gridcolor="#222222")
     st.plotly_chart(fig, use_container_width=True)
 
-    st.markdown("### Schedule Table")
-    display = df[["Job", "Work Center", "Step", "Start", "End"]].copy()
-    display["Start"] = display["Start"].dt.strftime("%Y-%m-%d %H:%M")
-    display["End"] = display["End"].dt.strftime("%Y-%m-%d %H:%M")
+    st.markdown("### Tabela rasporeda")
+    display = df[["Posao", "Radno mesto", "Korak", "Početak", "Kraj"]].copy()
+    display["Početak"] = display["Početak"].dt.strftime("%Y-%m-%d %H:%M")
+    display["Kraj"] = display["Kraj"].dt.strftime("%Y-%m-%d %H:%M")
     st.dataframe(display, use_container_width=True, hide_index=True)
 
-    st.markdown("### Move Job (What-if)")
+    st.markdown("### Pomeri posao (Šta-ako)")
     conn2 = get_db()
     job_ops = conn2.execute("""
         SELECT DISTINCT s.job_id, j.part_number FROM schedule s
@@ -452,74 +488,22 @@ def tab_gantt():
     if job_ops:
         col1, col2, col3 = st.columns([3, 3, 1])
         job_map = {f"#{j['job_id']} {j['part_number']}": j["job_id"] for j in job_ops}
-        sel = col1.selectbox("Select job to move", list(job_map.keys()), key="move_job_sel")
-        new_start = col2.date_input("New start date", value=date.today(), key="move_date")
-        if col3.button("MOVE"):
+        sel = col1.selectbox("Izaberi posao za pomeranje", list(job_map.keys()), key="move_job_sel")
+        new_start = col2.date_input("Novi datum početka", value=date.today(), key="move_date")
+        if col3.button("POMERI"):
             move_job(job_map[sel], tid, new_start.isoformat())
-            st.success("Job moved")
+            st.success("Posao pomeren")
             st.rerun()
 
 
-def tab_dashboard():
-    st.markdown("## // DASHBOARD")
-    conn = get_db()
-
-    jobs_all = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE tenant_id = ?", (tid,)).fetchone()
-    jobs_sched = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE tenant_id = ? AND status = 'scheduled'", (tid,)).fetchone()
-    jobs_comp = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE tenant_id = ? AND status = 'completed'", (tid,)).fetchone()
-    jobs_prog = conn.execute("SELECT COUNT(*) AS c FROM jobs WHERE tenant_id = ? AND status = 'in_progress'", (tid,)).fetchone()
-    wc_count = conn.execute("SELECT COUNT(*) AS c FROM work_centers WHERE tenant_id = ?", (tid,)).fetchone()
-    late_count = len(get_jobs_past_due(tid))
-
-    c1, c2, c3, c4, c5 = st.columns(5)
-    c1.markdown(f"<div class='metric-card'><div class='label'>TOTAL JOBS</div><div class='value'>{jobs_all['c']}</div></div>", unsafe_allow_html=True)
-    c2.markdown(f"<div class='metric-card'><div class='label'>SCHEDULED</div><div class='value'>{jobs_sched['c']}</div></div>", unsafe_allow_html=True)
-    c3.markdown(f"<div class='metric-card'><div class='label'>IN PROGRESS</div><div class='value'>{jobs_prog['c']}</div></div>", unsafe_allow_html=True)
-    c4.markdown(f"<div class='metric-card'><div class='label'>DONE</div><div class='value'>{jobs_comp['c']}</div></div>", unsafe_allow_html=True)
-    c5.markdown(f"<div class='metric-card'><div class='label' style='color:#FF4444'>LATE</div><div class='value' style='color:#FF4444'>{late_count}</div></div>", unsafe_allow_html=True)
-
-    load_data = conn.execute("""
-        SELECT wc.name, wc.type, wc.hours_per_day,
-               COALESCE(SUM(
-                   (julianday(s.end_datetime) - julianday(s.start_datetime)) * 24
-               ), 0) AS scheduled_hrs
-        FROM work_centers wc
-        LEFT JOIN schedule s ON s.work_center_id = wc.id
-        WHERE wc.tenant_id = ?
-        GROUP BY wc.id
-    """, (tid,)).fetchall()
-    conn.close()
-
-    if load_data:
-        st.markdown("### Work Center Load")
-        ld = pd.DataFrame([{
-            "Work Center": r["name"],
-            "Type": r["type"],
-            "Hours Scheduled": round(r["scheduled_hrs"], 1),
-            "Capacity (hrs/week)": r["hours_per_day"] * 5,
-        } for r in load_data])
-        ld["Load %"] = (ld["Hours Scheduled"] / ld["Capacity (hrs/week)"] * 100).clip(upper=100).round(1)
-        st.dataframe(ld, use_container_width=True, hide_index=True)
-
-        fig = px.bar(ld, x="Work Center", y="Load %", color="Type",
-                     color_discrete_map={"production": "#0088FF", "inspection": "#FF8800"},
-                     title="CAPACITY LOAD %")
-        fig.update_layout(paper_bgcolor="#000000", plot_bgcolor="#000000", font_color="#cccccc")
-        fig.update_xaxes(gridcolor="#222222")
-        fig.update_yaxes(gridcolor="#222222", range=[0, 110])
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No schedule data")
-
-
 def tab_conflicts():
-    st.markdown("## // CONFLICTS & CAPACITY")
-    t1, t2 = st.tabs(["Overlapping Operations", "Capacity Violations"])
+    st.markdown("## // KONFLIKTI I KAPACITET")
+    t1, t2 = st.tabs(["Preklapanje operacija", "Prekoračenje kapaciteta"])
 
     with t1:
         conflicts = get_conflicts(tid)
         if not conflicts:
-            st.success("No overlapping operations")
+            st.success("Nema preklapanja operacija")
         else:
             conn = get_db()
             data = []
@@ -527,10 +511,10 @@ def tab_conflicts():
                 j = conn.execute("SELECT part_number FROM jobs WHERE id = ? AND tenant_id = ?", (r["job_id"], tid)).fetchone()
                 w = conn.execute("SELECT name FROM work_centers WHERE id = ? AND tenant_id = ?", (r["work_center_id"], tid)).fetchone()
                 data.append({
-                    "Job": f"#{r['job_id']} {j['part_number'] if j else ''}",
-                    "Work Center": w["name"] if w else "",
-                    "Start": r["start_datetime"][:16],
-                    "End": r["end_datetime"][:16],
+                    "Posao": f"#{r['job_id']} {j['part_number'] if j else ''}",
+                    "Radno mesto": w["name"] if w else "",
+                    "Početak": r["start_datetime"][:16],
+                    "Kraj": r["end_datetime"][:16],
                 })
             conn.close()
             st.dataframe(pd.DataFrame(data), use_container_width=True, hide_index=True)
@@ -538,37 +522,37 @@ def tab_conflicts():
     with t2:
         caps = get_capacity_violations(tid)
         if not caps:
-            st.success("No capacity violations")
+            st.success("Nema prekoračenja kapaciteta")
         else:
             cd = pd.DataFrame([{
-                "Work Center": r["name"],
-                "Date": r["date"],
-                "Operations": r["ops"],
-                "Scheduled hrs": r["total_hrs"],
-                "Max hrs": r["hours_per_day"],
-                "Over by": round(r["total_hrs"] - r["hours_per_day"], 1),
+                "Radno mesto": r["name"],
+                "Datum": r["date"],
+                "Operacije": r["ops"],
+                "Planirano h": r["total_hrs"],
+                "Max h": r["hours_per_day"],
+                "Prekoračenje": round(r["total_hrs"] - r["hours_per_day"], 1),
             } for r in caps])
             st.dataframe(cd, use_container_width=True, hide_index=True)
 
 
 def tab_holidays():
-    st.markdown("## // CALENDAR")
+    st.markdown("## // KALENDAR")
     conn = get_db()
     holidays = conn.execute(
         "SELECT * FROM holidays WHERE tenant_id = ? ORDER BY date", (tid,)).fetchall()
     conn.close()
 
     if holidays:
-        hd = pd.DataFrame([{"Date": r["date"], "Description": r["description"]} for r in holidays])
+        hd = pd.DataFrame([{"Datum": r["date"], "Opis": r["description"]} for r in holidays])
         st.dataframe(hd, use_container_width=True, hide_index=True)
     else:
-        st.info("No holidays defined")
+        st.info("Nema definisanih praznika")
 
-    with st.expander("+ ADD HOLIDAY"):
+    with st.expander("+ DODAJ PRAZNIK"):
         col1, col2 = st.columns([2, 4])
-        hdate = col1.date_input("Date", key="hol_date")
-        hdesc = col2.text_input("Description (e.g. New Year)", key="hol_desc")
-        if st.button("ADD", key="add_holiday"):
+        hdate = col1.date_input("Datum", key="hol_date")
+        hdesc = col2.text_input("Opis (npr. Nova godina)", key="hol_desc")
+        if st.button("DODAJ", key="add_holiday"):
             conn2 = get_db()
             try:
                 conn2.execute("INSERT INTO holidays (tenant_id, date, description) VALUES (?, ?, ?)",
@@ -581,84 +565,113 @@ def tab_holidays():
 
 
 def tab_whatif():
-    st.markdown("## // WHAT-IF: RUSH JOB")
+    st.markdown("## // ŠTA-AKO: HITAN POSAO")
     conn = get_db()
     wc_list = conn.execute(
         "SELECT id, name FROM work_centers WHERE tenant_id = ? ORDER BY id", (tid,)).fetchall()
     conn.close()
 
     if not wc_list:
-        st.warning("Define work centers first")
+        st.warning("Prvo definiši radna mesta")
         return
 
-    st.markdown("Simulate inserting an urgent job into the current schedule")
+    st.markdown("Simuliraj ubacivanje hitnog posla u postojeći raspored")
 
     with st.form("whatif_form"):
-        pn = st.text_input("Part Number", value="RUSH-001")
-        qty = st.number_input("Quantity", min_value=1, value=50)
-        due = st.date_input("Due Date", value=date.today() + timedelta(days=7))
+        pn = st.text_input("Oznaka dela", value="HITNO-001")
+        qty = st.number_input("Količina", min_value=1, value=50)
+        due = st.date_input("Rok isporuke", value=date.today() + timedelta(days=7))
 
-        st.markdown("**Routing steps**")
+        st.markdown("**Operacije (rutiranje)**")
         steps = []
-        n_steps = st.number_input("Number of operations", min_value=1, max_value=10, value=2, key="wi_nsteps")
+        n_steps = st.number_input("Broj operacija", min_value=1, max_value=10, value=2, key="wi_nsteps")
         for i in range(int(n_steps)):
             col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 2, 3])
             wc_opts = {w["id"]: w["name"] for w in wc_list}
-            wc_id = col1.selectbox(f"Op{i+1} WC", list(wc_opts.keys()),
+            wc_id = col1.selectbox(f"Op{i+1} RM", list(wc_opts.keys()),
                                    format_func=lambda x: wc_opts[x],
                                    key=f"wi_wc_{i}")
-            setup = col2.number_input(f"Setup hrs", min_value=0.0, value=0.5, step=0.1, key=f"wi_setup_{i}")
-            run = col3.number_input(f"Run hrs/unit", min_value=0.0, value=0.02, step=0.001, format="%.3f", key=f"wi_run_{i}")
-            order = col4.number_input(f"Step order", min_value=1, value=i + 1, key=f"wi_order_{i}")
-            desc = col5.text_input(f"Description", value="", key=f"wi_desc_{i}")
+            setup = col2.number_input(f"Priprema h", min_value=0.0, value=0.5, step=0.1, key=f"wi_setup_{i}")
+            run = col3.number_input(f"Obrada h/kom", min_value=0.0, value=0.02, step=0.001, format="%.3f", key=f"wi_run_{i}")
+            order = col4.number_input(f"Red. broj", min_value=1, value=i + 1, key=f"wi_order_{i}")
+            desc = col5.text_input(f"Opis", value="", key=f"wi_desc_{i}")
             steps.append({"work_center_id": wc_id, "setup_hrs": setup,
                           "run_hrs_per_unit": run, "order": order, "desc": desc})
 
-        if st.form_submit_button("SIMULATE RUSH JOB", type="primary"):
+        if st.form_submit_button("SIMULIRAJ HITAN POSAO", type="primary"):
             result = what_if_rush_job(tid, pn, qty, due.isoformat(), steps, priority=10)
             if result["rush_on_time"]:
-                st.success(f"Rush job #{result['rush_job_id']} fits on time! ({result['total_late_jobs']} total late jobs)")
+                st.success(f"Hitni posao #{result['rush_job_id']} stiže na vreme! ({result['total_late_jobs']} ukupno kasnih poslova)")
             else:
-                st.warning(f"Rush job #{result['rush_job_id']} will be late. {result['total_late_jobs']} total late jobs in schedule.")
+                st.warning(f"Hitni posao #{result['rush_job_id']} će kasniti. {result['total_late_jobs']} ukupno kasnih poslova.")
             st.json(result)
             st.rerun()
 
+    st.markdown("---")
+    if st.button("OČISTI SIMULIRANE POSLOVE", use_container_width=True):
+        conn2 = get_db()
+        conn2.execute("""
+            DELETE FROM schedule WHERE job_id IN (
+                SELECT id FROM jobs WHERE tenant_id = ? AND part_number LIKE 'HITNO%'
+            ) AND tenant_id = ?
+        """, (tid, tid))
+        conn2.execute("""
+            DELETE FROM routing_steps WHERE job_id IN (
+                SELECT id FROM jobs WHERE tenant_id = ? AND part_number LIKE 'HITNO%'
+            ) AND tenant_id = ?
+        """, (tid, tid))
+        conn2.execute("DELETE FROM jobs WHERE tenant_id = ? AND part_number LIKE 'HITNO%'", (tid,))
+        conn2.commit()
+        conn2.close()
+        st.success("Simulirani poslovi obrisani")
+        st.rerun()
+
 
 def tab_import():
-    st.markdown("## // CSV IMPORT")
-    st.markdown("Upload a CSV to bulk-import jobs (and optionally routing steps).")
+    st.markdown("## // CSV UVOZ")
+    st.markdown("Otpremite CSV za grupni uvoz poslova (i opciono operacija).")
+
+    csv_template = pd.DataFrame([
+        {"part_number": "PRIMER-001", "quantity": 100, "due_date": "2026-06-15",
+         "priority": 5, "notes": "uzorak",
+         "wc_1": 1, "setup_1": 1.0, "run_1": 0.05,
+         "wc_2": 2, "setup_2": 0.5, "run_2": 0.02},
+    ])
+    csv_data = csv_template.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        label="PREUZMI CSV ŠABLON",
+        data=csv_data,
+        file_name="schedpro_import_template.csv",
+        mime="text/csv",
+        type="primary",
+        use_container_width=True,
+    )
 
     st.markdown("""
     ### Format
-    **Required columns:** `part_number`, `quantity`, `due_date`  
-    **Optional columns:** `priority`, `notes`, `wc_1`, `setup_1`, `run_1`, `wc_2`, `setup_2`, `run_2`, ...
+    **Obavezne kolone:** `part_number`, `quantity`, `due_date`  
+    **Opcione kolone:** `priority`, `notes`, `wc_1`, `setup_1`, `run_1`, `wc_2`, `setup_2`, `run_2`, ...
 
-    Example:
-    ```
-    part_number,quantity,due_date,priority,wc_1,setup_1,run_1,wc_2,setup_2,run_2
-    BRKT-100,200,2026-06-15,5,1,1.0,0.05,2,0.5,0.02
-    SHFT-050,50,2026-06-01,8,1,0.5,0.08,2,0.25,0.01
-    ```
-    Use work center IDs from the WORK CENTERS tab.
+    Koristi ID-ove radnih mesta iz kartice RADNA MESTA.
     """)
 
-    uploaded = st.file_uploader("Choose CSV file", type="csv", key="csv_uploader")
+    uploaded = st.file_uploader("Izaberi CSV fajl", type="csv", key="csv_uploader")
     if uploaded is not None:
         df = pd.read_csv(uploaded)
-        st.markdown(f"**{len(df)} rows loaded**")
+        st.markdown(f"**{len(df)} redova učitano**")
         st.dataframe(df.head(10), use_container_width=True, hide_index=True)
 
-        if st.button("IMPORT JOBS", type="primary", key="import_btn"):
+        if st.button("UVOZI POSLOVE", type="primary", key="import_btn"):
             conn = get_db()
             imported = 0
             errors = []
             for _, row in df.iterrows():
-                row = row.dropna().to_dict()
+                row = row.dropna(how="all").to_dict()
                 pn = row.get("part_number")
                 qty = row.get("quantity")
                 due = row.get("due_date")
                 if not pn or not qty or not due:
-                    errors.append(f"Missing required field: {row}")
+                    errors.append(f"Nedostaje obavezno polje: {row}")
                     continue
                 pri = int(row.get("priority", 5))
                 notes = str(row.get("notes", ""))
@@ -685,30 +698,32 @@ def tab_import():
                                 VALUES (?,?,?,?,?,?,?)
                             """, (tid, job_id, i, wc_id, setup_hrs, run_val, desc))
                         except Exception as e:
-                            errors.append(f"Step {i} for job {pn}: {e}")
+                            errors.append(f"Korak {i} za posao {pn}: {e}")
                     else:
                         break
                 imported += 1
             conn.commit()
             conn.close()
-            st.success(f"Imported {imported} jobs")
+            st.success(f"Uvezeno {imported} poslova")
             if errors:
                 for e in errors[:5]:
                     st.warning(e)
                 if len(errors) > 5:
-                    st.warning(f"... and {len(errors)-5} more errors")
+                    st.warning(f"... i još {len(errors)-5} grešaka")
             st.rerun()
 
 
-tabs = st.tabs(["WORK CENTERS", "JOBS", "GANTT", "DASHBOARD", "CONFLICTS", "CALENDAR", "WHAT-IF", "CSV IMPORT"])
+if lic["status"] == "trial_warning":
+    st.warning(f"⚠️ {lic['message']}")
+
+tabs = st.tabs(["RADNA MESTA", "POSLOVI", "GANT", "KONFLIKTI", "KALENDAR", "ŠTA-AKO", "CSV UVOZ"])
 
 with tabs[0]: tab_work_centers()
 with tabs[1]: tab_jobs()
 with tabs[2]: tab_gantt()
-with tabs[3]: tab_dashboard()
-with tabs[4]: tab_conflicts()
-with tabs[5]: tab_holidays()
-with tabs[6]: tab_whatif()
-with tabs[7]: tab_import()
+with tabs[3]: tab_conflicts()
+with tabs[4]: tab_holidays()
+with tabs[5]: tab_whatif()
+with tabs[6]: tab_import()
 
 sidebar()

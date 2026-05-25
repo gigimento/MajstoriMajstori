@@ -57,7 +57,7 @@ Write-Host "       Dependencies installed" -ForegroundColor Green
 
 # Step 5: copy app files
 Write-Host "[5/5] Copying app files..." -ForegroundColor Yellow
-Copy-Item -Path "app.py", "models.py", "scheduler.py", "requirements.txt" -Destination "$OUTPUT\app" -Force
+Copy-Item -Path "app.py", "models.py", "scheduler.py", "license.py", "requirements.txt" -Destination "$OUTPUT\app" -Force
 if (Test-Path "scheduler.db") { Copy-Item -Path "scheduler.db" -Destination "$OUTPUT\app" -Force }
 Write-Host "       App files copied" -ForegroundColor Green
 

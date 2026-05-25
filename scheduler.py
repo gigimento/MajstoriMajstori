@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta, date
 from models import get_db
+from collections import defaultdict
 
 WORK_START = 6
 WORK_END = 22
@@ -58,22 +59,6 @@ def _add_working_hours(start_dt, hours_needed, holidays):
     return current
 
 
-def _get_working_hours_between(start, end, holidays):
-    total = 0.0
-    current = start
-    while current < end:
-        if _is_working_day(current, holidays):
-            day_start = current.replace(hour=WORK_START, minute=0, second=0, microsecond=0)
-            day_end = current.replace(hour=WORK_END, minute=0, second=0, microsecond=0)
-            block_start = max(current, day_start)
-            block_end = min(end, day_end)
-            if block_end > block_start:
-                total += (block_end - block_start).total_seconds() / 3600
-        current += timedelta(days=1)
-        current = current.replace(hour=WORK_START, minute=0, second=0, microsecond=0)
-    return total
-
-
 def _subtract_working_hours(end_dt, hours_needed, holidays):
     remaining = hours_needed * 60
     current = end_dt
@@ -101,65 +86,6 @@ def _score_weight(due_date, priority, today=None):
     return score
 
 
-def schedule_job(conn, job_id, tenant_id, start_dt=None, mode="forward", holidays=None):
-    steps = conn.execute("""
-        SELECT rs.*, wc.name AS wc_name, wc.type AS wc_type,
-               wc.hours_per_day, wc.efficiency
-        FROM routing_steps rs
-        JOIN work_centers wc ON rs.work_center_id = wc.id
-        WHERE rs.job_id = ? AND rs.tenant_id = ?
-        ORDER BY rs.step_order
-    """, (job_id, tenant_id)).fetchall()
-
-    if not steps:
-        return
-
-    job = conn.execute(
-        "SELECT * FROM jobs WHERE id = ? AND tenant_id = ?",
-        (job_id, tenant_id)).fetchone()
-    if not job:
-        return
-
-    conn.execute("DELETE FROM schedule WHERE job_id = ? AND tenant_id = ?", (job_id, tenant_id))
-
-    if mode == "backward":
-        end_dt = datetime.fromisoformat(job["due_date"]).replace(hour=WORK_END, minute=0, second=0, microsecond=0)
-        entries = []
-        for step in reversed(steps):
-            wc_id = step["work_center_id"]
-            total_hrs = step["setup_hrs"] + (step["run_hrs_per_unit"] * job["quantity"])
-            total_hrs /= step["efficiency"]
-            start = _subtract_working_hours(end_dt, total_hrs, holidays)
-            entries.append((start, end_dt, step["id"], wc_id))
-            end_dt = start
-        entries.reverse()
-        for start, end, step_id, wc_id in entries:
-            conn.execute("""
-                INSERT OR REPLACE INTO schedule
-                    (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (tenant_id, job_id, step_id, wc_id, start.isoformat(), end.isoformat()))
-    else:
-        current = start_dt or datetime.now().replace(hour=WORK_START, minute=0, second=0, microsecond=0)
-        current = _next_working_start(current, holidays)
-        for step in steps:
-            wc_id = step["work_center_id"]
-            total_hrs = step["setup_hrs"] + (step["run_hrs_per_unit"] * job["quantity"])
-            total_hrs /= step["efficiency"]
-            end_time = _add_working_hours(current, total_hrs, holidays)
-            conn.execute("""
-                INSERT OR REPLACE INTO schedule
-                    (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (tenant_id, job_id, step["id"], wc_id, current.isoformat(), end_time.isoformat()))
-            current = end_time
-
-    conn.execute("""
-        UPDATE jobs SET status = 'scheduled'
-        WHERE id = ? AND tenant_id = ? AND status IN ('unscheduled','scheduled')
-    """, (job_id, tenant_id))
-
-
 def _get_sorted_jobs(conn, tenant_id):
     today = date.today()
     jobs = conn.execute("""
@@ -176,6 +102,59 @@ def _get_sorted_jobs(conn, tenant_id):
     return [j for _, j in scored]
 
 
+def _count_overlaps(intervals, start, end):
+    """Count how many intervals overlap with [start, end)."""
+    count = 0
+    for b_start, b_end in intervals:
+        if start < b_end and end > b_start:
+            count += 1
+    return count
+
+
+def _find_forward_slot(wc_booked, wc_id, start_from, total_hrs, holidays, max_concurrent):
+    """Find next available forward slot respecting existing bookings and concurrency limit."""
+    booked = wc_booked[wc_id]
+    current = start_from
+    max_iter = 200
+    for _ in range(max_iter):
+        end = _add_working_hours(current, total_hrs, holidays)
+        overlaps = _count_overlaps(booked, current, end)
+        if overlaps < max_concurrent:
+            booked.append((current, end))
+            booked.sort(key=lambda x: x[0])
+            return current, end
+        earliest_end = min(b_end for b_start, b_end in booked
+                           if current < b_end and end > b_start)
+        if earliest_end <= current:
+            earliest_end = current + timedelta(minutes=1)
+        current = earliest_end
+    raise RuntimeError(f"Could not find slot for {total_hrs}h on WC {wc_id}")
+
+
+def _find_backward_slot(wc_booked, wc_id, end_at, total_hrs, holidays, max_concurrent):
+    """Find previous available backward slot respecting existing bookings."""
+    booked = wc_booked[wc_id]
+    current = end_at
+    max_iter = 200
+    for _ in range(max_iter):
+        start = _subtract_working_hours(current, total_hrs, holidays)
+        overlaps = _count_overlaps(booked, start, current)
+        if overlaps < max_concurrent:
+            booked.append((start, current))
+            booked.sort(key=lambda x: x[0])
+            return start, current
+        latest_start = max(b_start for b_start, b_end in booked
+                           if start < b_end and current > b_start)
+        if latest_start >= current:
+            latest_start = current - timedelta(minutes=1)
+        current = latest_start
+
+
+def _calc_job_hrs(job, step):
+    """Calculate total hours for a step given job and step data."""
+    return (step["setup_hrs"] + (step["run_hrs_per_unit"] * job["quantity"])) / step["efficiency"]
+
+
 def forward_schedule(tenant_id, start_date=None):
     conn = get_db()
     cur = conn.cursor()
@@ -183,25 +162,21 @@ def forward_schedule(tenant_id, start_date=None):
 
     cur.execute("DELETE FROM schedule WHERE tenant_id = ?", (tenant_id,))
 
-    daily_load = {}
-
-    def _can_fit(wc_id, day, planned_hrs, max_hrs):
-        key = (wc_id, day.isoformat())
-        used = daily_load.get(key, 0)
-        return used + planned_hrs <= max_hrs
-
-    def _add_load(wc_id, day, hrs):
-        key = (wc_id, day.isoformat())
-        daily_load[key] = daily_load.get(key, 0) + hrs
-
     jobs = _get_sorted_jobs(cur, tenant_id)
+    if not jobs:
+        conn.commit()
+        conn.close()
+        return
+
+    wc_max = {}
+    wc_booked = defaultdict(list)
 
     for job in jobs:
         start = start_date or datetime.now().replace(hour=WORK_START, minute=0, second=0, microsecond=0)
         start = _next_working_start(start, holidays)
 
         steps = cur.execute("""
-            SELECT rs.*, wc.hours_per_day, wc.efficiency
+            SELECT rs.*, wc.hours_per_day, wc.efficiency, wc.max_concurrent_jobs
             FROM routing_steps rs
             JOIN work_centers wc ON rs.work_center_id = wc.id
             WHERE rs.job_id = ? AND rs.tenant_id = ?
@@ -210,45 +185,19 @@ def forward_schedule(tenant_id, start_date=None):
 
         current = start
         for step in steps:
-            total_hrs = step["setup_hrs"] + (step["run_hrs_per_unit"] * job["quantity"])
-            total_hrs /= step["efficiency"]
-
-            while True:
-                end_time = _add_working_hours(current, total_hrs, holidays)
-                fits = True
-                d = current.date()
-                while d <= end_time.date():
-                    hrs_on_day = _get_working_hours_between(
-                        max(current, datetime.combine(d, datetime.min.time()).replace(hour=WORK_START)),
-                        min(end_time, datetime.combine(d, datetime.min.time()).replace(hour=WORK_END)),
-                        holidays
-                    )
-                    if hrs_on_day > 0 and not _can_fit(step["work_center_id"], d, hrs_on_day, step["hours_per_day"]):
-                        fits = False
-                        break
-                    d += timedelta(days=1)
-                if fits:
-                    break
-                current = _next_working_start(end_time, holidays)
-
-            d = current.date()
-            while d <= end_time.date():
-                hrs_on_day = _get_working_hours_between(
-                    max(current, datetime.combine(d, datetime.min.time()).replace(hour=WORK_START)),
-                    min(end_time, datetime.combine(d, datetime.min.time()).replace(hour=WORK_END)),
-                    holidays
-                )
-                if hrs_on_day > 0:
-                    _add_load(step["work_center_id"], d, hrs_on_day)
-                d += timedelta(days=1)
-
+            wc_id = step["work_center_id"]
+            if wc_id not in wc_max:
+                wc_max[wc_id] = step["max_concurrent_jobs"]
+            total_hrs = _calc_job_hrs(job, step)
+            slot_start, slot_end = _find_forward_slot(
+                wc_booked, wc_id, current, total_hrs, holidays, wc_max[wc_id])
             cur.execute("""
                 INSERT OR REPLACE INTO schedule
                     (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (tenant_id, job["id"], step["id"], step["work_center_id"],
-                  current.isoformat(), end_time.isoformat()))
-            current = end_time
+            """, (tenant_id, job["id"], step["id"], wc_id,
+                  slot_start.isoformat(), slot_end.isoformat()))
+            current = slot_end
 
         cur.execute("""
             UPDATE jobs SET status = 'scheduled'
@@ -267,33 +216,45 @@ def backward_schedule(tenant_id):
     cur.execute("DELETE FROM schedule WHERE tenant_id = ?", (tenant_id,))
 
     jobs = _get_sorted_jobs(cur, tenant_id)
+    if not jobs:
+        conn.commit()
+        conn.close()
+        return
+
+    wc_max = {}
+    wc_booked = defaultdict(list)
 
     for job in jobs:
         end_dt = datetime.fromisoformat(job["due_date"]).replace(hour=WORK_END, minute=0, second=0, microsecond=0)
 
         steps = cur.execute("""
-            SELECT rs.*, wc.hours_per_day, wc.efficiency
+            SELECT rs.*, wc.hours_per_day, wc.efficiency, wc.max_concurrent_jobs
             FROM routing_steps rs
             JOIN work_centers wc ON rs.work_center_id = wc.id
             WHERE rs.job_id = ? AND rs.tenant_id = ?
             ORDER BY rs.step_order
         """, (job["id"], tenant_id)).fetchall()
 
+        current = end_dt
         entries = []
         for step in reversed(steps):
-            total_hrs = step["setup_hrs"] + (step["run_hrs_per_unit"] * job["quantity"])
-            total_hrs /= step["efficiency"]
-            start = _subtract_working_hours(end_dt, total_hrs, holidays)
-            entries.append((start, end_dt, step["id"], step["work_center_id"]))
-            end_dt = start
+            wc_id = step["work_center_id"]
+            if wc_id not in wc_max:
+                wc_max[wc_id] = step["max_concurrent_jobs"]
+            total_hrs = _calc_job_hrs(job, step)
+            slot_start, slot_end = _find_backward_slot(
+                wc_booked, wc_id, current, total_hrs, holidays, wc_max[wc_id])
+            entries.append((slot_start, slot_end, step["id"], wc_id))
+            current = slot_start
 
         entries.reverse()
-        for start, end, step_id, wc_id in entries:
+        for slot_start, slot_end, step_id, wc_id in entries:
             cur.execute("""
                 INSERT OR REPLACE INTO schedule
                     (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
                 VALUES (?, ?, ?, ?, ?, ?)
-            """, (tenant_id, job["id"], step_id, wc_id, start.isoformat(), end.isoformat()))
+            """, (tenant_id, job["id"], step_id, wc_id,
+                  slot_start.isoformat(), slot_end.isoformat()))
 
         cur.execute("""
             UPDATE jobs SET status = 'scheduled'
@@ -302,6 +263,82 @@ def backward_schedule(tenant_id):
 
     conn.commit()
     conn.close()
+
+
+def schedule_job(conn, job_id, tenant_id, start_dt=None, mode="forward", holidays=None):
+    steps = conn.execute("""
+        SELECT rs.*, wc.name AS wc_name, wc.type AS wc_type,
+               wc.hours_per_day, wc.efficiency, wc.max_concurrent_jobs
+        FROM routing_steps rs
+        JOIN work_centers wc ON rs.work_center_id = wc.id
+        WHERE rs.job_id = ? AND rs.tenant_id = ?
+        ORDER BY rs.step_order
+    """, (job_id, tenant_id)).fetchall()
+
+    if not steps:
+        return
+
+    job = conn.execute(
+        "SELECT * FROM jobs WHERE id = ? AND tenant_id = ?",
+        (job_id, tenant_id)).fetchone()
+    if not job:
+        return
+
+    conn.execute("DELETE FROM schedule WHERE job_id = ? AND tenant_id = ?", (job_id, tenant_id))
+
+    if holidays is None:
+        holidays = _get_holidays(conn, tenant_id)
+
+    wc_booked = defaultdict(list)
+    existing = conn.execute("""
+        SELECT work_center_id, start_datetime, end_datetime
+        FROM schedule WHERE tenant_id = ?
+    """, (tenant_id,)).fetchall()
+    for r in existing:
+        wc_booked[r["work_center_id"]].append((
+            datetime.fromisoformat(r["start_datetime"]),
+            datetime.fromisoformat(r["end_datetime"]),
+        ))
+    for lst in wc_booked.values():
+        lst.sort(key=lambda x: x[0])
+
+    if mode == "backward":
+        end_dt = datetime.fromisoformat(job["due_date"]).replace(hour=WORK_END, minute=0, second=0, microsecond=0)
+        entries = []
+        for step in reversed(steps):
+            wc_id = step["work_center_id"]
+            total_hrs = _calc_job_hrs(job, step)
+            slot_start, slot_end = _find_backward_slot(
+                wc_booked, wc_id, end_dt, total_hrs, holidays, step["max_concurrent_jobs"])
+            entries.append((slot_start, slot_end, step["id"], wc_id))
+            end_dt = slot_start
+        entries.reverse()
+        for slot_start, slot_end, step_id, wc_id in entries:
+            conn.execute("""
+                INSERT OR REPLACE INTO schedule
+                    (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (tenant_id, job_id, step_id, wc_id, slot_start.isoformat(), slot_end.isoformat()))
+    else:
+        current = start_dt or datetime.now().replace(hour=WORK_START, minute=0, second=0, microsecond=0)
+        current = _next_working_start(current, holidays)
+        for step in steps:
+            wc_id = step["work_center_id"]
+            total_hrs = _calc_job_hrs(job, step)
+            slot_start, slot_end = _find_forward_slot(
+                wc_booked, wc_id, current, total_hrs, holidays, step["max_concurrent_jobs"])
+            conn.execute("""
+                INSERT OR REPLACE INTO schedule
+                    (tenant_id, job_id, routing_step_id, work_center_id, start_datetime, end_datetime)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (tenant_id, job_id, step["id"], wc_id,
+                  slot_start.isoformat(), slot_end.isoformat()))
+            current = slot_end
+
+    conn.execute("""
+        UPDATE jobs SET status = 'scheduled'
+        WHERE id = ? AND tenant_id = ? AND status IN ('unscheduled','scheduled')
+    """, (job_id, tenant_id))
 
 
 def get_conflicts(tenant_id):

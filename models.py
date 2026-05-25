@@ -25,24 +25,6 @@ def get_db():
     return conn
 
 
-def get_tenant_db(tenant_id):
-    conn = get_db()
-    conn.tenant_id = tenant_id
-    old_execute = conn.execute
-
-    def _execute(sql, params=None):
-        if params is None:
-            params = ()
-        if isinstance(params, dict):
-            pass
-        elif isinstance(params, (list, tuple)):
-            pass
-        return old_execute(sql, params)
-
-    conn.execute = _execute
-    return conn
-
-
 def init_db():
     conn = get_db()
     conn.executescript("""
@@ -120,13 +102,24 @@ def init_db():
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             data TEXT NOT NULL
         );
+
+        CREATE TABLE IF NOT EXISTS license (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            tenant_id INTEGER NOT NULL UNIQUE REFERENCES tenants(id),
+            hw_id TEXT NOT NULL DEFAULT '',
+            trial_start TEXT,
+            last_run TEXT,
+            license_key TEXT DEFAULT '',
+            activated_at TEXT,
+            expires_at TEXT
+        );
     """)
-    # create default tenant + admin if empty
     existing = conn.execute("SELECT COUNT(*) AS c FROM tenants").fetchone()
     if existing["c"] == 0:
-        conn.execute("INSERT INTO tenants (name) VALUES (?)", ("Default",))
+        conn.execute("INSERT INTO tenants (name) VALUES (?)", ("Podrazumevani",))
         conn.execute("INSERT INTO users (username, password_hash, tenant_id) VALUES (?, ?, ?)",
                      ("admin", _hash_password("admin"), 1))
+        conn.execute("INSERT INTO license (tenant_id) VALUES (?)", (1,))
         conn.commit()
     conn.close()
 
@@ -136,15 +129,16 @@ def register_user(username, password, tenant_name=None):
     existing = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
     if existing:
         conn.close()
-        return None, "Username already exists"
+        return None, "Korisničko ime već postoji"
 
     if tenant_name is None:
-        tenant_name = f"{username}'s Workspace"
+        tenant_name = f"{username} — radni prostor"
 
     cur = conn.execute("INSERT INTO tenants (name) VALUES (?)", (tenant_name,))
     tenant_id = cur.lastrowid
     conn.execute("INSERT INTO users (username, password_hash, tenant_id) VALUES (?, ?, ?)",
                  (username, _hash_password(password), tenant_id))
+    conn.execute("INSERT INTO license (tenant_id) VALUES (?)", (tenant_id,))
     conn.commit()
 
     user = conn.execute("SELECT u.*, t.name AS tenant_name FROM users u JOIN tenants t ON u.tenant_id = t.id WHERE u.id = ?",
@@ -163,7 +157,7 @@ def authenticate_user(username, password):
     """, (username,)).fetchone()
     conn.close()
     if not user:
-        return None, "Invalid username or password"
+        return None, "Neispravno korisničko ime ili lozinka"
     if not _check_password(user["password_hash"], password):
-        return None, "Invalid username or password"
+        return None, "Neispravno korisničko ime ili lozinka"
     return dict(user), None
