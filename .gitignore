@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+scheduler.db
+SCHEDPRO/
+python-embed.zip
